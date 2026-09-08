@@ -1,4 +1,4 @@
-# Anvaya
+# ALGparsimony
 
 A toolkit for turning chromosome-scale synteny data into a parsimony-based
 phylogenetic hypothesis, using ancestral-linkage-group (ALG) **fusion** and
@@ -9,6 +9,7 @@ post-fusion **mixing** as discrete characters.
 | **`genomes_to_rbh.py`** | Raw genomes → `.rbh` ortholog tables. Builds reciprocal-best-hit orthology with DIAMOND, defines linkage groups from either one reference genome or a multi-genome consensus, optionally filters short scaffolds and rescues whole-genome-duplication ohnologs. |
 | **`alg_parsimony.py`** | `.rbh` tables → character matrix, parsimony trees, synapomorphies, support statistics and publication figures. |
 | **`make_toy_dataset.py`** | Generates a small synthetic dataset with known ground truth, for testing the pipeline end to end (including against a real DIAMOND install). |
+| **`sweep_consensus_params.py`** | Sweeps the three consensus-mode thresholds and writes one TSV summarising the linkage-group counts, to guide parameter choice. |
 
 Only `pandas` is a hard requirement. `matplotlib` (figures), `scipy`
 (enrichment tests), `biopython` (CDS→protein translation) and `diamond`
@@ -81,6 +82,7 @@ Every flag, one line each. Defaults in brackets.
 | `--max-target-seqs` | DIAMOND hits retained per query [5]. |
 | `--threads` | DIAMOND threads [4]. |
 | `--genetic-code` | NCBI translation table for CDS→protein [1]. |
+| `--no-reuse-blast` | Recompute alignments even if a cached result with the same `--evalue`/`--max-target-seqs` exists in the work directory [off; cached results are reused]. |
 
 ### `alg_parsimony.py`
 
@@ -152,6 +154,52 @@ The three `--consensus-*` thresholds are the parameters most likely to
 decide whether your reconstruction is usable, and none of them has a
 universally correct value. They do genuinely different jobs, so tune them
 in this order.
+
+### The quick way: sweep all three at once
+
+`sweep_consensus_params.py` runs the sweep for you and writes a single TSV:
+
+```bash
+python3 sweep_consensus_params.py \
+    --input-dir ./Data \
+    --consensus-species Ixod Varr Sarc Neoseiu \
+    --outdir ./sweep \
+    --min-species 3 4 \
+    --min-frac 1.0 0.75 0.5 \
+    --min-alg-orthogroups 1 5 10 15 20 30 \
+    --threads 30
+```
+
+```
+min_species  min_frac  min_alg_orthogroups  n_linkage_groups  n_orthogroups_kept  ...  largest_group  pct_orthogroups_retained
+3            1.0       1                    9                 60                       14             100.0
+3            1.0       15                   0                 60                       0              0.0
+3            0.75      10                   4                 60                       15             100.0
+```
+
+Reading it:
+
+- **`n_linkage_groups`** — the number you are trying to make biologically
+  plausible; compare against known haploid chromosome counts for your clade.
+- **`pct_orthogroups_retained`** — how much of your data ends up inside a kept
+  group. A combination with a nice group count but tiny retention is a bad
+  trade, and the row with `min_alg_orthogroups 15` above shows how a size
+  filter set too high can silently discard everything.
+- **`largest_group`** — if one group swallows most of the orthogroups,
+  `--consensus-min-frac` is too permissive and unrelated groups are merging.
+
+It is much faster than it looks. `--consensus-min-alg-orthogroups` is a pure
+post-reconstruction size filter, so every value on that axis is derived
+arithmetically from one reconstruction instead of rerunning it; and all
+combinations share one work directory, so the DIAMOND alignments are computed
+once for the whole sweep. Only `min-species × min-frac` actually triggers a
+run.
+
+Use `--extra` to pass anything else through, e.g.
+`--extra --min-scaffold-length 100000`.
+
+The rest of this section explains what each threshold does, for interpreting
+that table.
 
 ### Step 0 — a diagnostic run with everything permissive
 

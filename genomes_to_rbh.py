@@ -524,11 +524,21 @@ _BLAST_COLS = ["qseqid", "sseqid", "pident", "length", "mismatch", "gapopen",
                "qstart", "qend", "sstart", "send", "evalue", "bitscore"]
 
 
-def run_diamond_oneway(query_faa, db_faa, work_dir, tag, evalue, max_target_seqs, threads):
+def run_diamond_oneway(query_faa, db_faa, work_dir, tag, evalue, max_target_seqs, threads,
+                        reuse_blast=True):
     db_prefix = work_dir / f"db_{db_faa.stem}"
     if not Path(f"{db_prefix}.dmnd").exists():
         run_cmd(["diamond", "makedb", "--in", str(db_faa), "-d", str(db_prefix), "--quiet"])
-    out_tsv = work_dir / f"{tag}.blast.tsv"
+    # The search parameters are baked into the cache filename, so runs that differ in
+    # --evalue or --max-target-seqs never collide on the same cached file. This makes
+    # repeated invocations over the same genomes (e.g. a consensus-threshold parameter
+    # sweep, where only post-alignment options change) skip the expensive alignment
+    # step entirely rather than recomputing an identical result each time.
+    sig = f"e{evalue}_m{max_target_seqs}"
+    out_tsv = work_dir / f"{tag}.{sig}.blast.tsv"
+    if reuse_blast and out_tsv.exists() and out_tsv.stat().st_size > 0:
+        log(f"  reusing cached alignment: {out_tsv.name}")
+        return out_tsv
     run_cmd([
         "diamond", "blastp",
         "--db", f"{db_prefix}.dmnd", "--query", str(query_faa),
@@ -567,9 +577,11 @@ def compute_rbh_pairs_between(sp_a, faa_a, sp_b, faa_b, work_root, args):
     pair_dir = work_root / f"{sp_a}_vs_{sp_b}"
     pair_dir.mkdir(parents=True, exist_ok=True)
     fwd_tsv = run_diamond_oneway(faa_a, faa_b, pair_dir, f"{sp_a}_vs_{sp_b}",
-                                  args.evalue, args.max_target_seqs, args.threads)
+                                  args.evalue, args.max_target_seqs, args.threads,
+                                  reuse_blast=not args.no_reuse_blast)
     rev_tsv = run_diamond_oneway(faa_b, faa_a, pair_dir, f"{sp_b}_vs_{sp_a}",
-                                  args.evalue, args.max_target_seqs, args.threads)
+                                  args.evalue, args.max_target_seqs, args.threads,
+                                  reuse_blast=not args.no_reuse_blast)
     return compute_rbh(fwd_tsv, rev_tsv)
 
 
@@ -702,7 +714,8 @@ def run_wgd_detection(sp_name, faa, gene_to_chr, work_root, args):
     self_dir = work_root / f"{sp_name}_self"
     self_dir.mkdir(parents=True, exist_ok=True)
     self_tsv = run_diamond_oneway(faa, faa, self_dir, f"{sp_name}_self",
-                                   args.evalue, args.max_target_seqs + 1, args.threads)
+                                   args.evalue, args.max_target_seqs + 1, args.threads,
+                                   reuse_blast=not args.no_reuse_blast)
     paralog_pairs = compute_self_paralog_pairs(self_tsv)
     log(f"  -> {len(paralog_pairs)} intragenomic reciprocal-best-hit paralog pairs")
 
@@ -1186,9 +1199,11 @@ def process_species(sp_name, sp_info, ref_name, ref_faa, ref_gene_to_chr, ref_ge
                                    sp_gene_to_chr, args)
 
     fwd_tsv = run_diamond_oneway(ref_faa, sp_faa, sp_dir, f"{ref_name}_vs_{sp_name}",
-                                  args.evalue, args.max_target_seqs, args.threads)
+                                  args.evalue, args.max_target_seqs, args.threads,
+                                  reuse_blast=not args.no_reuse_blast)
     rev_tsv = run_diamond_oneway(sp_faa, ref_faa, sp_dir, f"{sp_name}_vs_{ref_name}",
-                                  args.evalue, args.max_target_seqs, args.threads)
+                                  args.evalue, args.max_target_seqs, args.threads,
+                                  reuse_blast=not args.no_reuse_blast)
     pairs = compute_rbh(fwd_tsv, rev_tsv)
     log(f"  -> {len(pairs)} reciprocal best hits")
     if not pairs:
@@ -1312,6 +1327,14 @@ def main():
     parser.add_argument("--max-target-seqs", type=int, default=5)
     parser.add_argument("--threads", type=int, default=4)
     parser.add_argument("--genetic-code", type=int, default=1)
+    parser.add_argument("--no-reuse-blast", action="store_true",
+                        help="Recompute every diamond alignment even if a cached result from a "
+                             "previous run with the same --evalue/--max-target-seqs is present in "
+                             "the work directory. By default such results ARE reused, which makes "
+                             "repeated runs over the same genomes (e.g. sweeping the consensus "
+                             "thresholds, which only affect post-alignment steps) much faster. Use "
+                             "this if the input FASTA/annotation files themselves have changed but "
+                             "the work directory was not cleared.")
     parser.add_argument("--min-scaffold-length", type=int, default=0,
                         help="Exclude genes on scaffolds shorter than this many bp from being considered "
                              "for reciprocal-best-hit search at all (default: 0 = no filtering). Scaffold "
