@@ -1,4 +1,4 @@
-# ALGparsimony
+# Anvaya
 
 A toolkit for turning chromosome-scale synteny data into a parsimony-based
 phylogenetic hypothesis, using ancestral-linkage-group (ALG) **fusion** and
