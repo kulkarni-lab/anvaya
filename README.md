@@ -130,6 +130,7 @@ Every flag, one line each. Defaults in brackets.
 | `--max-target-seqs` | DIAMOND hits retained per query [5]. |
 | `--threads` | DIAMOND threads [4]. |
 | `--genetic-code` | NCBI translation table for CDS→protein [1]. |
+| `--no-reuse-blast` | Recompute alignments even when a cached result with the same `--evalue`/`--max-target-seqs` exists in the work directory [off; caching is what makes sweeps fast]. |
 | `--no-reuse-blast` | Recompute alignments even if a cached result with the same `--evalue`/`--max-target-seqs` exists in the work directory [off; cached results are reused]. |
 
 ### `alg_parsimony.py`
@@ -168,6 +169,9 @@ Every flag, one line each. Defaults in brackets.
 | `--bootstrap-restarts` | NNI restarts per bootstrap replicate, heuristic regime only [3]. |
 | `--permutation-test N` | Signal-test replicates: does the matrix beat randomly shuffled data at all? [0 = off]. |
 | `--permutation-restarts` | NNI restarts per permutation replicate, heuristic regime only [3]. |
+| `--rate-model` | Fit branch rate models (Poisson and Brownian-increment) to per-branch event counts and test whether some branches are elevated. Writes `rate_models_<run>.tsv` and `branch_events_<run>.tsv`. |
+| `--rate-tree` | Newick file with branch lengths (e.g. time-calibrated) to scale event counts by. Without it, branches are assumed equal — a test of events per branch, not per unit time. |
+| `--rate-bootstrap` | Parametric bootstrap replicates for the rate test [1000]. Report this p-value, not the chi-square: these matrices are too small for reliable asymptotics. |
 
 CI/RI homoplasy indices are always computed — no flag needed.
 
@@ -180,8 +184,13 @@ CI/RI homoplasy indices are always computed — no flag needed.
 | `--plot-ribbon` | Multi-track ribbon/riparian plot connecting orthologs between adjacent taxa. |
 | `--ribbon-order` | Explicit top-to-bottom taxon order for the ribbon plot; any subset of ≥2 taxa. |
 | `--ribbon-order-from-tree` | Order ribbon tracks by a ladderized traversal of the `reversible` or `irreversible` tree, so clades stay contiguous. |
+| `--ribbon-include-reference` | Add the linkage-group reference (consensus cALGs, or the reference genome's chromosomes) as the top ribbon track — unfused by construction, so it reads as the ancestral baseline. |
+| `--ribbon-sort-chromosomes` | Reorder each track's chromosomes to minimise ribbon crossings between adjacent tracks (barycenter heuristic). Reports crossings before and after. |
+| `--ribbon-chrom-gap` | Gap between chromosomes on a ribbon track, as a fraction of that track's width [0.015]. |
+| `--ribbon-width-frac` | Ribbon width as a fraction of one gene slot; the remainder is white space between ribbons [0.55]. |
 | `--plot-matrix` | Taxa × characters heatmap of the character matrix. |
 | `--plot-trees` | Rendered cladogram per criterion, with synapomorphies labelled on branches. |
+| `--plot-called-only` | Restrict dot plots, ideograms and the ribbon plot to orthologs whose association actually cleared `--min-genes`/`--alpha`, so figures match the evidence behind the characters. Does not affect the matrix, tree or any statistic. |
 | `--plot-format` | `pdf`, `png` or `svg` for every figure [pdf]. |
 | `--highlight-wgd` | Extra dot plot + ribbon plot + summary table highlighting WGD-rescued orthologs. |
 
@@ -193,6 +202,25 @@ CI/RI homoplasy indices are always computed — no flag needed.
 | `--export-tnt` | Write a Hennig86 matrix with a TNT script (reversible criterion only). |
 | `--run-paup` / `--run-tnt` | Also execute PAUP*/TNT if present on the system. |
 | `--paup-bin` / `--tnt-bin` | Executable name or path [`paup`, `tnt`]. |
+
+### `sweep_consensus_params.py`
+
+| Flag | Meaning |
+|---|---|
+| `--input-dir`, `--consensus-species` | As for `genomes_to_rbh.py` (required). |
+| `--outdir` | Directory for intermediate runs and the summary TSV [`consensus_sweep`]. |
+| `--out-tsv` | Path for the summary TSV [`<outdir>/consensus_sweep_summary.tsv`]. |
+| `--min-species` | Values of `--consensus-min-species` to sweep. |
+| `--min-frac` | Values of `--consensus-min-frac` to sweep [1.0 0.75 0.5]. |
+| `--min-alg-orthogroups` | Values to report; derived arithmetically from each reconstruction, so extra values are nearly free [1 5 10 15 20 30]. |
+| `--plot` | Also write the three-panel threshold-selection figure (requires matplotlib). |
+| `--plot-out` | Path for that figure [`<outdir>/consensus_thresholds.png`]; the extension sets the format, so use `.pdf` for vector. |
+| `--chosen-min-species` | Which `--min-species` value the heatmaps show, and which sizes file panel A is drawn from [lowest swept]. |
+| `--chosen-min-frac` | Highlight this `--min-frac` in the figure and draw panel A from it. |
+| `--chosen-min-alg-orthogroups` | Highlight this size threshold and mark it on panel A. |
+| `--genomes-to-rbh` | Path to `genomes_to_rbh.py` [auto-detected]. |
+| `--keep-runs` | Keep each combination's `.rbh` directory (the per-combination sizes files are kept either way). |
+| `--extra` | Everything after this is passed to `genomes_to_rbh.py` unchanged. Must come last. |
 
 ---
 
@@ -215,8 +243,21 @@ python3 sweep_consensus_params.py \
     --min-species 3 4 \
     --min-frac 1.0 0.75 0.5 \
     --min-alg-orthogroups 1 5 10 15 20 30 \
-    --threads 30
+    --threads 30 \
+    --plot --plot-out ./Figure1.pdf \
+    --chosen-min-species 4 --chosen-min-frac 0.5 --chosen-min-alg-orthogroups 20
 ```
+
+`--plot` also renders a three-panel figure: the linkage-group size
+distribution at the chosen setting with the threshold marked, plus heatmaps
+of the recovered group count and the orthogroup retention across the whole
+grid, with the chosen cell outlined.
+
+![Threshold-selection figure](mock_figures/Figure1_thresholds.png)
+
+*Example output (synthetic data). Panel A is the basis for choosing
+`--consensus-min-alg-orthogroups`; panels B and C show how the group count
+and data retention trade off across the grid.*
 
 ```
 min_species  min_frac  min_alg_orthogroups  n_linkage_groups  n_orthogroups_kept  ...  largest_group  pct_orthogroups_retained
@@ -397,6 +438,107 @@ both in that sensitivity analysis — not just one.
 
   (Note the `.gff3`-or-`.gtf` handling — assuming one extension silently
   produces empty output for species using the other.)
+
+---
+
+## Testing sensitivity to `--min-genes` and `--alpha`
+
+The consensus thresholds above decide what a linkage group *is*. Two further
+thresholds decide when a linkage group counts as **present on a chromosome**,
+and so how many fusion characters exist at all:
+
+- `--min-genes` — minimum orthologs supporting the association
+- `--alpha` — Fisher's exact enrichment cutoff
+
+Neither has a defensible default for every dataset, and their effect on
+homoplasy can be large. Sweep them the same way as the consensus thresholds:
+
+```bash
+for mg in 5 10 20; do
+  for a in 0.05 0.01; do
+    python3 alg_parsimony.py --indir ./rbh_out \
+        --outdir ./sens_mg${mg}_a${a} --min-genes $mg --alpha $a \
+        --constraint constraint.txt --outgroup MyOutgroup \
+        --bootstrap 100 > /dev/null 2>&1
+    printf "min-genes=%-3s alpha=%-5s chars=%-4s " "$mg" "$a" \
+      "$(head -1 ./sens_mg${mg}_a${a}/character_matrix.tsv | tr '\t' '\n' | tail -n +2 | wc -l)"
+    grep "ensemble CI" ./sens_mg${mg}_a${a}/report.txt | head -1
+  done
+done
+```
+
+### Reading the result
+
+A real example, 22 acariform and parasitiform taxa against 27 reconstructed
+consensus linkage groups:
+
+| `--min-genes` | `--alpha` | characters | CI | RI |
+|---|---|---|---|---|
+| 5 | 0.05 | 325 | 0.366 | 0.436 |
+| 5 | 0.01 | 314 | 0.363 | 0.424 |
+| 10 | 0.05 | 297 | 0.564 | 0.612 |
+| 10 | 0.01 | 288 | 0.571 | 0.598 |
+| 20 | 0.05 | 264 | 0.657 | 0.663 |
+| 20 | 0.01 | 255 | **0.685** | **0.694** |
+
+Two things stand out, and both generalise:
+
+- **`--min-genes` is the lever; `--alpha` barely matters.** Raising the
+  ortholog minimum from 5 to 20 nearly doubles CI (0.366 → 0.657) while
+  costing only 19% of characters. Tightening `--alpha` tenfold moves CI by
+  at most ~0.03. The enrichment test is not what lets noise through — the
+  ortholog count is.
+- **Character count alone is a poor guide.** The largest matrix is also the
+  most homoplastic. Associations called on a handful of orthologs add steps
+  without adding signal, so more characters can mean a worse matrix.
+
+A low CI is worth diagnosing rather than just reporting. Note that in
+`ci_ri_<run>.tsv` the columns are `character, m, s, g, CI, RI` — CI is
+field **5**, RI is field **6**:
+
+```bash
+sort -k5,5g ci_ri_reversible.tsv | head -20                            # worst CI
+awk -F'\t' 'NR>1 && $5<0.5 {n++} END {print n}' ci_ri_reversible.tsv   # CI < 0.5
+awk -F'\t' 'NR>1 && $6==0  {n++} END {print n}' ci_ri_reversible.tsv   # RI exactly 0
+```
+
+`RI = 0` means a character takes as many steps on your tree as on a
+completely unresolved one: it carries no phylogenetic information at all.
+
+### Compound fusions inflate the character count
+
+A chromosome carrying *k* linkage groups is decomposed into C(*k*,2) pairwise
+characters, all from what may be a single compound event, and all
+non-independent. Check how concentrated this is:
+
+```bash
+awk -F'\t' 'NR>1 {print $1"\t"$2"\t"$3; print $1"\t"$2"\t"$4}' alg_scaffold_calls.tsv \
+  | sort -u | cut -f1,2 | uniq -c | awk '{print $1}' | sort -n | uniq -c
+```
+
+In the dataset above, 12% of scaffolds carried ≥10 linkage groups yet
+generated **57%** of all pairwise character instances, while the 44% of
+scaffolds carrying only 2–3 groups contributed 5%. Where the distribution is
+that skewed, say so in the methods: the effective number of independent
+characters is well below the nominal count, and the inflated count depresses
+CI.
+
+### What to report
+
+Report the sweep, not just the chosen values. A statement such as *"we used
+`--min-genes 20`; CI rose from 0.37 to 0.66 across the tested range while the
+character count fell only 19%, and the recovered topology was stable"* is far
+stronger than a bare threshold — and the numbers are already in hand. Confirm
+the stability claim before making it:
+
+```bash
+for d in sens_mg*; do printf "%-24s " "$d"; cat $d/tree_reversible.nwk; done
+```
+
+Note that `--min-genes` and `--alpha` affect the **character matrix**, and so
+the trees and all statistics — but by default they do **not** change dot
+plots, ideograms or ribbon plots, which show every recovered ortholog. Use
+`--plot-called-only` to make the figures respect the same thresholds.
 
 ---
 
@@ -604,6 +746,36 @@ python3 genomes_to_rbh.py \
     --parsimony-outdir toy_parsimony_consensus \
     --forward --min-genes 3 --alpha 0.05 --outgroup T1
 ```
+
+---
+
+## Example figures
+
+Rendered from a synthetic dataset (`make_mock_rbh.py` in `mock_figures/`),
+so the layouts can be inspected before committing real data to them.
+
+**Ribbon plot** — one track per taxon, painted by linkage group, with the
+consensus reference on top as an unfused baseline. Ordered by the tree and
+with chromosome order optimised to minimise crossings, so the crossings that
+remain reflect genuine rearrangement:
+
+![Ribbon plot](mock_figures/Figure2_ribbon.png)
+
+**Character matrix and trees** — the matrix heatmap plus both optimality
+criteria, with synapomorphies labelled on the branches where they originate:
+
+![Character matrix and trees](mock_figures/Figure3_matrix_trees.png)
+
+**Ohnolog rescue** — the same duplicated genome without rescue (A) and with
+it (B): plain reciprocal best hit splits orthologs thinly across both
+ohnologous copies so neither clears the threshold, and the duplication
+becomes invisible rather than obvious.
+
+![WGD rescue](mock_figures/Figure5_wgd_rescue.png)
+
+Panels C and D there are assembled from `ohnolog_summary.tsv` and
+`duplication_blocks.tsv` by `mock_figures/assemble_mock_figures.py`; the
+other panels come straight from the toolkit.
 
 ---
 
