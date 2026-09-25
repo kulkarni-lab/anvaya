@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/anvaya_logo.png" alt="Anvaya" width="420">
+</p>
+
 # Anvaya
 
 A toolkit for turning chromosome-scale synteny data into a parsimony-based
@@ -10,6 +14,7 @@ post-fusion **mixing** as discrete characters.
 | **`alg_parsimony.py`** | `.rbh` tables → character matrix, parsimony trees, synapomorphies, support statistics and publication figures. |
 | **`make_toy_dataset.py`** | Generates a small synthetic dataset with known ground truth, for testing the pipeline end to end (including against a real DIAMOND install). |
 | **`sweep_consensus_params.py`** | Sweeps the three consensus-mode thresholds and writes one TSV summarising the linkage-group counts, to guide parameter choice. |
+| **`calibrate_wgd.py`** | Calibrates `--wgd-min-paralog-pairs` per taxon from a diagnostic run, using karyotype expectation rather than significance. |
 
 **A full tutorial with eight worked examples is provided as
 `Anvaya_tutorial.pdf`** — covering duplicated vs. unduplicated genomes, both
@@ -191,6 +196,8 @@ CI/RI homoplasy indices are always computed — no flag needed.
 | `--plot-matrix` | Taxa × characters heatmap of the character matrix. |
 | `--plot-trees` | Rendered cladogram per criterion, with synapomorphies labelled on branches. |
 | `--plot-called-only` | Restrict dot plots, ideograms and the ribbon plot to orthologs whose association actually cleared `--min-genes`/`--alpha`, so figures match the evidence behind the characters. Does not affect the matrix, tree or any statistic. |
+| `--ribbon-per-gene` | Draw one ribbon per ortholog instead of collapsing consecutive runs into syntenic-block ribbons. Blocks are the default: they read more cleanly and cut the file size dramatically (1870 KB → 35 KB on a 13-taxon set). |
+| `--rasterize-ribbons` | Rasterize only the ribbon layer, leaving bars, labels and axes as editable vectors. A last resort for very dense datasets; usually produces a *larger* file than block ribbons. |
 | `--plot-format` | `pdf`, `png` or `svg` for every figure [pdf]. |
 | `--highlight-wgd` | Extra dot plot + ribbon plot + summary table highlighting WGD-rescued orthologs. |
 
@@ -543,6 +550,76 @@ plots, ideograms or ribbon plots, which show every recovered ortholog. Use
 ---
 
 ## Detecting whole-genome duplication
+
+Reciprocal best hit is a strict 1:1 mapping, so a genome carrying a
+lineage-specific duplication loses one member of every ohnologous pair. The
+practical effect is a **systematic false negative**: orthologs are split
+between the two retained copies of each ancestral chromosome, neither copy
+clears `--min-genes`, and a fully retained linkage group is called *absent*
+rather than doubled. `--detect-wgd` finds ohnologous chromosome pairs by
+intragenomic self-comparison and adds the dropped copy back, flagged
+`wgd_inferred` so rescued and direct evidence stay separable.
+
+### Calibrating `--wgd-min-paralog-pairs`
+
+Run the detection once with the count filter off, so every candidate pair is
+reported:
+
+```bash
+python3 genomes_to_rbh.py --input-dir ./Data \
+    --consensus-species SpA SpB SpC \
+    --detect-wgd --wgd-species Dup1 Dup2 \
+    --wgd-min-paralog-pairs 1 \
+    --rbh-outdir ./rbh_wgd_diag --rbh-only --threads 30
+
+python3 calibrate_wgd.py rbh_wgd_diag/duplication_blocks.tsv \
+    --plot --plot-out wgd_thresholds.pdf
+```
+
+Add `--chosen SPECIES=N ...` to mark your final thresholds on the figure once
+you have decided them, e.g. `--chosen Limulus=70 Mgig=30`.
+
+**Do not threshold on significance.** Fisher's exact test asks whether a
+chromosome pair carries more paralogy than the genome-wide background
+predicts, which is not the same question as whether the two chromosomes are
+ohnologous — two small, paralog-poor chromosomes clear that bar on a handful
+of shared paralogs. On real genomes this routinely accepts pairs supported by
+1–3 paralogs, and can make nearly half of all possible chromosome pairs
+"significant". Enrichment is necessary, not sufficient.
+
+**Use karyotype expectation instead.** After one whole-genome duplication each
+chromosome has exactly one ohnologous partner, so *n* chromosomes give roughly
+*n*/2 confirmed pairs, rising toward *n* if the genome has since been
+rearranged or duplicated again. `calibrate_wgd.py` reports the lowest threshold
+consistent with each expectation, per taxon, and plots three panels per taxon:
+
+- **A** — candidate pairs ranked by support, coloured by significance
+- **B** — support against significance (a scatter here is the warning sign)
+- **C** — confirmed pairs, and chromosomes retaining >1 partner, across thresholds
+
+Panel C is the one to choose from. The red curve carries biological
+information in its own right: chromosomes keeping several partners at every
+threshold indicate a *network* of ohnology — post-duplication rearrangement or
+more than one round — rather than clean pairs.
+
+Thresholds legitimately differ several-fold between taxa, because paralog-pair
+counts scale with genome size and gene content. Set them per species:
+
+```bash
+--wgd-min-paralog-pairs 30 Limulus=70 Mgig=30
+```
+
+A bare number is the default for any species not named; `--wgd-alpha` takes the
+same form. A name that isn't in `--wgd-species` is rejected rather than
+silently ignored.
+
+> **Scope.** Rescue assumes one ohnologous partner per chromosome. Where that
+> fails — multiple rounds, or heavy post-duplication rearrangement — it is
+> partial, and recovered counts are a **lower bound**. Check
+> `duplication_blocks.tsv` and say so rather than presenting the result as
+> complete.
+
+
 
 ### Which genomes go where
 
