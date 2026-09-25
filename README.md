@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/anvaya_logo.png" alt="Anvaya" width="420">
+  <img src="assets/anvaya_logo.png" alt="Anvaya" width="820">
 </p>
 
 # Anvaya
