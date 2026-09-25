@@ -1,7 +1,6 @@
 <p align="center">
-  <img src="assets/anvaya_logo.png" alt="Anvaya" width="820">
+  <img src="assets/anvaya_logo.png" alt="Anvaya" width="720">
 </p>
-
 # Anvaya
 
 A toolkit for turning chromosome-scale synteny data into a parsimony-based
