@@ -1054,8 +1054,3 @@ actionable:
 
 1. the full command you ran, and
 2. `report.txt` from the run, which records every warning the run emitted.
-
-If you are changing the parsimony or consensus logic, run
-`bash tests/smoke_test.sh` first — it asserts that a dataset with a designed
-tree still recovers that tree, which is the check most likely to catch a
-regression.
