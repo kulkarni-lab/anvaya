@@ -121,6 +121,116 @@ def parse_presence(stdout):
     return (int(m.group(1)), int(m.group(2))) if m else (None, None)
 
 
+def plot_sweep(rows, outdir, out_png, panel_a_sizes, panel_a_label,
+                chosen_frac=None, chosen_minalg=None, chosen_minsp=None):
+    """Three-panel threshold-selection figure:
+      A  rank-ordered linkage-group size distribution at the chosen setting,
+         with the size threshold marked
+      B  heatmap of n_linkage_groups over min_frac x min_alg_orthogroups
+      C  heatmap of pct_orthogroups_retained over the same grid
+    Returns True if written, False if matplotlib is unavailable."""
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        matplotlib.rcParams["pdf.fonttype"] = 42   # editable text, not outlines
+        matplotlib.rcParams["ps.fonttype"] = 42
+        matplotlib.rcParams["svg.fonttype"] = "none"
+        import matplotlib.pyplot as plt
+        import numpy as np
+    except ImportError:
+        log("matplotlib not available; skipping --plot")
+        return False
+
+    # Restrict the heatmaps to one min_species value so each cell is unambiguous.
+    if chosen_minsp is None:
+        chosen_minsp = sorted({r["min_species"] for r in rows})[0]
+    sub = [r for r in rows if r["min_species"] == chosen_minsp
+           and r["n_linkage_groups"] != "NA"]
+    if not sub:
+        log("no successful combinations to plot")
+        return False
+
+    fracs = sorted({r["min_frac"] for r in sub}, reverse=True)
+    maos = sorted({r["min_alg_orthogroups"] for r in sub})
+    lut = {(r["min_frac"], r["min_alg_orthogroups"]): r for r in sub}
+
+    ngroups = np.full((len(fracs), len(maos)), np.nan)
+    retained = np.full((len(fracs), len(maos)), np.nan)
+    for i, f in enumerate(fracs):
+        for j, m in enumerate(maos):
+            r = lut.get((f, m))
+            if r is None:
+                continue
+            ngroups[i, j] = float(r["n_linkage_groups"])
+            if r["pct_orthogroups_retained"] != "NA":
+                retained[i, j] = float(r["pct_orthogroups_retained"])
+
+    fig = plt.figure(figsize=(15.5, 4.3))
+    # Generous wspace: each heatmap carries a colorbar on its right, whose label
+    # sits outside the axes and would otherwise collide with the next panel's
+    # y-axis label.
+    gs = fig.add_gridspec(1, 3, width_ratios=[1.15, 1, 1], wspace=0.55)
+
+    # ---- Panel A: size distribution ----
+    axA = fig.add_subplot(gs[0, 0])
+    if panel_a_sizes:
+        ranks = range(1, len(panel_a_sizes) + 1)
+        axA.plot(ranks, panel_a_sizes, color="#1F4E79", linewidth=1.4)
+        axA.fill_between(ranks, panel_a_sizes, 0.7, color="#1F4E79", alpha=0.15)
+        axA.set_yscale("log")
+        axA.set_xlabel("Linkage group (rank)")
+        axA.set_ylabel("Member orthogroups")
+        if chosen_minalg is not None:
+            axA.axhline(chosen_minalg, color="#C00000", linestyle="--", linewidth=1.2)
+            n_kept = sum(1 for s in panel_a_sizes if s >= chosen_minalg)
+            axA.text(0.97, 0.93,
+                     f"threshold = {chosen_minalg}\n\u2192 {n_kept} groups kept",
+                     transform=axA.transAxes, ha="right", va="top", fontsize=8,
+                     color="#C00000")
+        axA.set_title(f"A  Size distribution ({panel_a_label})", loc="left",
+                      fontsize=10, fontweight="bold")
+    else:
+        axA.axis("off")
+
+    def heat(ax, mat, title, cmap, fmt, cbar_label):
+        im = ax.imshow(mat, cmap=cmap, aspect="auto")
+        ax.set_xticks(range(len(maos)))
+        ax.set_xticklabels(maos, fontsize=8)
+        ax.set_yticks(range(len(fracs)))
+        ax.set_yticklabels([f"{f:g}" for f in fracs], fontsize=8)
+        ax.set_xlabel("--consensus-min-alg-orthogroups", fontsize=8.5)
+        ax.set_ylabel("--consensus-min-frac", fontsize=8.5)
+        ax.set_title(title, loc="left", fontsize=10, fontweight="bold")
+        finite = mat[np.isfinite(mat)]
+        mid = (finite.max() + finite.min()) / 2 if finite.size else 0
+        for i in range(mat.shape[0]):
+            for j in range(mat.shape[1]):
+                if not np.isfinite(mat[i, j]):
+                    continue
+                ax.text(j, i, format(mat[i, j], fmt), ha="center", va="center",
+                        fontsize=7,
+                        color="white" if mat[i, j] > mid else "#222222")
+        if chosen_frac is not None and chosen_minalg is not None \
+                and chosen_frac in fracs and chosen_minalg in maos:
+            ax.add_patch(plt.Rectangle(
+                (maos.index(chosen_minalg) - 0.5, fracs.index(chosen_frac) - 0.5), 1, 1,
+                fill=False, edgecolor="#C00000", linewidth=2.2))
+        cb = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        cb.set_label(cbar_label, fontsize=7.5)
+        cb.ax.tick_params(labelsize=7)
+
+    heat(fig.add_subplot(gs[0, 1]), ngroups, "B  Linkage groups recovered",
+         "viridis_r", ".0f", "n linkage groups")
+    heat(fig.add_subplot(gs[0, 2]), retained, "C  Orthogroups retained",
+         "YlGnBu", ".0f", "% retained")
+
+    fig.suptitle(f"Consensus threshold selection (--consensus-min-species = {chosen_minsp})",
+                 fontsize=11, y=1.02)
+    fig.savefig(out_png, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    return True
+
+
 def main():
     ap = argparse.ArgumentParser(
         description="Sweep genomes_to_rbh.py consensus thresholds and tabulate the resulting "
@@ -147,6 +257,21 @@ def main():
     ap.add_argument("--keep-runs", action="store_true",
                     help="keep each combination's .rbh output directory (uses more disk; the "
                          "shared work directory with the cached alignments is kept either way)")
+    ap.add_argument("--plot", action="store_true",
+                    help="also write a three-panel threshold-selection figure: the linkage-group "
+                         "size distribution at the chosen setting, plus heatmaps of the recovered "
+                         "group count and the orthogroup retention across the sweep grid "
+                         "(requires matplotlib)")
+    ap.add_argument("--plot-out", default=None,
+                    help="path for the figure [<outdir>/consensus_thresholds.png]; the extension "
+                         "sets the format, so use .pdf for vector output")
+    ap.add_argument("--chosen-min-species", type=int, default=None,
+                    help="which --min-species value the figure's heatmaps should show, since each "
+                         "cell must be unambiguous [the lowest swept value]")
+    ap.add_argument("--chosen-min-frac", type=float, default=None,
+                    help="highlight this --min-frac in the figure, and draw panel A from it")
+    ap.add_argument("--chosen-min-alg-orthogroups", type=int, default=None,
+                    help="highlight this size threshold in the figure and mark it on panel A")
     ap.add_argument("--extra", nargs=argparse.REMAINDER, default=[],
                     help="everything after this is passed through to genomes_to_rbh.py unchanged")
     args = ap.parse_args()
@@ -227,10 +352,11 @@ def main():
         log(f"  -> {len(sizes)} candidate groups; "
             f"{kept_ogs}/{total_ogs} orthogroups passed the presence filter")
 
+        # Always preserve the sizes file - it is the actual per-combination result and
+        # what panel A of the threshold figure is drawn from - regardless of whether the
+        # bulky .rbh output directory is being kept.
+        shutil.copy(sizes_path, outdir / f"sizes_{tag}.tsv")
         if not args.keep_runs:
-            # keep the sizes file (it is the actual result), drop the bulky .rbh output
-            keep = outdir / f"sizes_{tag}.tsv"
-            shutil.copy(sizes_path, keep)
             shutil.rmtree(run_dir, ignore_errors=True)
 
     if not rows:
@@ -245,6 +371,28 @@ def main():
             f.write("\t".join(str(r[c]) for c in cols) + "\n")
 
     log(f"wrote {out_tsv} ({len(rows)} rows)")
+
+    if args.plot:
+        chosen_sp = args.chosen_min_species
+        if chosen_sp is None:
+            chosen_sp = sorted({r["min_species"] for r in rows})[0]
+        chosen_frac = args.chosen_min_frac
+        if chosen_frac is None:
+            chosen_frac = sorted({r["min_frac"] for r in rows})[0]
+        panel_a_sizes, panel_a_label = [], ""
+        sizes_file = outdir / f"sizes_ms{chosen_sp}_mf{chosen_frac}.tsv"
+        if sizes_file.exists():
+            panel_a_sizes = sorted(read_sizes(sizes_file), reverse=True)
+            panel_a_label = f"min-species {chosen_sp}, min-frac {chosen_frac:g}"
+        else:
+            log(f"  (no sizes file for min-species={chosen_sp} min-frac={chosen_frac}; "
+                f"panel A will be blank)")
+        plot_path = Path(args.plot_out) if args.plot_out else outdir / "consensus_thresholds.png"
+        if plot_sweep(rows, outdir, plot_path, panel_a_sizes, panel_a_label,
+                       chosen_frac=chosen_frac,
+                       chosen_minalg=args.chosen_min_alg_orthogroups,
+                       chosen_minsp=chosen_sp):
+            log(f"wrote {plot_path}")
     log("")
     log("How to read it: pick a combination whose n_linkage_groups is biologically")
     log("plausible for your clade AND whose pct_orthogroups_retained is not tiny. Then")

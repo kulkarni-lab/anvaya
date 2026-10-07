@@ -235,12 +235,6 @@ except ImportError:
     fisher_exact = None
 
 
-DEFAULT_PALETTE = [
-    "#AB7E26", "#47957F", "#7B7B7B", "#3B69B2", "#764A9B", "#C76E00",
-    "#8B0000", "#1B9E77", "#D95F02", "#7570B3", "#E7298A", "#66A61E",
-    "#E6AB02", "#A6CEE3", "#1F78B4", "#B2DF8A", "#33A02C", "#FB9A99",
-]
-
 GFF_EXTENSIONS = (".gff3", ".gff")
 GTF_EXTENSIONS = (".gtf",)
 
@@ -424,6 +418,35 @@ def ensure_protein_fasta(name, info, work_dir, wgd_output_dir, genetic_code):
 # Minimum scaffold size filter (--min-scaffold-length)
 # ==========================================================================
 
+def assembly_contiguity(lengths, name):
+    """N50, scaffold count and span from a {scaffold: length} map, with a warning
+    when contiguity falls below the level at which macrosynteny calls become
+    unreliable. Fragmented assemblies split true linkage groups across many
+    scaffolds, which both loses real fusions and manufactures spurious ones; an
+    N50 around 1 Mb is the commonly cited floor for chromosome-scale synteny
+    inference. Reported for every genome so the user sees it before, not after,
+    interpreting the output."""
+    if not lengths:
+        return None
+    vals = sorted(lengths.values(), reverse=True)
+    total = sum(vals)
+    half, run, n50 = total / 2.0, 0, vals[-1]
+    for v in vals:
+        run += v
+        if run >= half:
+            n50 = v
+            break
+    stats = {"n_scaffolds": len(vals), "span": total, "n50": n50, "longest": vals[0]}
+    log(f"  -> {name} assembly: {len(vals)} scaffolds, span {total/1e6:.1f} Mb, "
+        f"N50 {n50/1e6:.2f} Mb, longest {vals[0]/1e6:.1f} Mb")
+    if n50 < 1_000_000:
+        log(f"  -> WARNING: {name} has N50 < 1 Mb. Macrosynteny inference is highly sensitive to "
+            f"assembly fragmentation; fusion calls from this genome may be unreliable, and it is a "
+            f"poor choice of reference or consensus-core genome. Consider --min-scaffold-length, or "
+            f"restrict it to a comparison taxon.")
+    return stats
+
+
 def compute_scaffold_lengths(gff_file, is_gtf):
     """Scaffold/chromosome lengths in bp. Prefers GFF3 '##sequence-region
     seqid start end' pragma lines (the authoritative source, when present);
@@ -496,9 +519,13 @@ def filter_fasta_by_scaffold(faa_in, faa_out, gene_to_chr, scaffold_lengths, min
 def get_search_ready_faa(name, info, work_dir, wgd_output_dir, genetic_code, gene_to_chr, args):
     """ensure_protein_fasta(), then apply --min-scaffold-length filtering if requested."""
     faa_path = ensure_protein_fasta(name, info, work_dir, wgd_output_dir, genetic_code)
+    # Report contiguity for EVERY genome, not only when filtering is requested: the
+    # user needs to know an assembly is fragmented before interpreting any synteny
+    # call from it, whether or not a length filter is in use.
+    scaffold_lengths = compute_scaffold_lengths(info["gff"], info["gff_is_gtf"])
+    assembly_contiguity(scaffold_lengths, name)
     if not args.min_scaffold_length or args.min_scaffold_length <= 0:
         return faa_path
-    scaffold_lengths = compute_scaffold_lengths(info["gff"], info["gff_is_gtf"])
     filtered_path = work_dir / f"{name}.minscaf.faa"
     n_kept, n_excluded, excluded_scaffolds = filter_fasta_by_scaffold(
         faa_path, filtered_path, gene_to_chr, scaffold_lengths, args.min_scaffold_length)
@@ -724,8 +751,10 @@ def run_wgd_detection(sp_name, faa, gene_to_chr, work_root, args):
         paralog_partners[g1].append(g2)
         paralog_partners[g2].append(g1)
 
+    min_pairs, alpha = wgd_thresholds(args, sp_name)
+    log(f"  -> thresholds for {sp_name}: --wgd-min-paralog-pairs {min_pairs}, --wgd-alpha {alpha}")
     ohnolog_of, report = detect_ohnologous_chromosomes(
-        paralog_pairs, gene_to_chr, args.wgd_min_paralog_pairs, args.wgd_alpha)
+        paralog_pairs, gene_to_chr, min_pairs, alpha)
     if report:
         log(f"  -> {len(report)} confirmed ohnologous scaffold pair(s):")
         for c1, c2, n, pval in report:
@@ -733,9 +762,35 @@ def run_wgd_detection(sp_name, faa, gene_to_chr, work_root, args):
             log(f"       {c1} <-> {c2}  ({n} paralog pairs, p={pstr})")
     else:
         log(f"  -> no scaffold pair reached --wgd-min-paralog-pairs "
-            f"({args.wgd_min_paralog_pairs}) / --wgd-alpha ({args.wgd_alpha}); "
+            f"({min_pairs}) / --wgd-alpha ({alpha}); "
             f"no evidence of retained whole-genome/segmental duplication found")
     return dict(paralog_partners), ohnolog_of, report
+
+
+def parse_per_species(values, cast, flag):
+    """['30', 'Limulus=40'] -> (default=30, {'Limulus': 40}). A bare value sets the
+    default for every species not named explicitly."""
+    default, per = None, {}
+    for v in values:
+        if "=" in v:
+            sp, val = v.split("=", 1)
+            try:
+                per[sp.strip()] = cast(val)
+            except ValueError:
+                sys.exit(f"{flag}: could not parse '{v}' (expected SPECIES=VALUE)")
+        else:
+            try:
+                default = cast(v)
+            except ValueError:
+                sys.exit(f"{flag}: could not parse '{v}'")
+    return default, per
+
+
+def wgd_thresholds(args, sp_name):
+    """The (min_pairs, alpha) that apply to one species."""
+    d_n, per_n = parse_per_species(args.wgd_min_paralog_pairs, int, "--wgd-min-paralog-pairs")
+    d_a, per_a = parse_per_species(args.wgd_alpha, float, "--wgd-alpha")
+    return per_n.get(sp_name, 5 if d_n is None else d_n), per_a.get(sp_name, 0.05 if d_a is None else d_a)
 
 
 def rescue_ohnolog_pairs(pairs, sp_paralog_partners, sp_gene_to_chr, sp_ohnolog_of):
@@ -861,6 +916,36 @@ def reconstruct_consensus_algs(core_species, orthogroups, min_species, min_frac,
     if not kept:
         sys.exit("No orthogroups survive --consensus-min-species; lower it or add more/better-"
                  "conserved --consensus-species.")
+
+    # Agreement is measured as (number of core genomes agreeing) / (number sharing both
+    # orthogroups), so only the discrete fractions k/n are ever achievable. A min_frac
+    # sitting just ABOVE one of those fractions silently behaves like the next one up -
+    # e.g. with 3 core genomes, --consensus-min-frac 0.67 rejects 2-of-3 agreement,
+    # because 2/3 = 0.6667 < 0.67, and so is indistinguishable from requiring unanimity.
+    # That is very easy to hit when reasoning in "k of n" terms, and produces two
+    # different settings with identical output, so spell out the real meaning up front.
+    n_core = len(core_species)
+    meaning = []
+    for shared in range(2, n_core + 1):
+        need = None
+        for k in range(shared, 0, -1):
+            if k / shared >= min_frac:
+                need = k
+            else:
+                break
+        meaning.append(f"{need}/{shared}" if need is not None else f">{shared}/{shared} (impossible)")
+    log(f"--consensus-min-frac {min_frac} means, for orthogroup pairs shared by "
+        f"{'/'.join(str(s) for s in range(2, n_core + 1))} core genomes respectively: "
+        f"{', '.join(meaning)} must agree")
+    for shared in range(2, n_core + 1):
+        for k in range(1, shared):
+            frac = k / shared
+            if 0 < (min_frac - frac) <= 0.02:
+                log(f"NOTE: --consensus-min-frac {min_frac} is just above {k}/{shared} "
+                    f"({frac:.4f}); if you intended '{k} of {shared} genomes may agree', "
+                    f"use {frac - 0.005:.3f} or lower - as given, {k}-of-{shared} agreement "
+                    f"is REJECTED")
+                break
 
     if min_species == len(core_species) and min_frac >= 1.0:
         # fast path: every kept orthogroup has all core species, so "co-located in
@@ -990,6 +1075,10 @@ def run_consensus_mode(species, core_species, faa_of, gene_to_chr_of, gene_to_po
             f.write(f"{rank}\t{n}\t{kept}\n")
     log(f"wrote {sizes_path} ({len(lg_size_report)} candidate linkage groups, before size filtering)")
 
+    # One colour map for the whole run, so a linkage group looks the same in every
+    # taxon's .rbh file and therefore in every figure.
+    run_alg_colors = assign_unique_colors(set(alg_of.values()))
+
     anchor = core_species[0]
     ref_pos_of_og = {}
     running = 0
@@ -1088,7 +1177,7 @@ def run_consensus_mode(species, core_species, faa_of, gene_to_chr_of, gene_to_po
             r["fet"] = fet_lookup.get((r["sp_scaf"], r["ref_chrom"]))
 
         out_path = rbh_outdir / f"{sp_name}.rbh"
-        write_rbh(out_path, ref_label, sp_name, rows)
+        write_rbh(out_path, ref_label, sp_name, rows, alg_colors=run_alg_colors)
         log(f"  -> wrote {out_path} ({len(rows)} orthologs)")
         written.append(out_path)
 
@@ -1123,17 +1212,95 @@ def compute_whole_fet(df):
     return result
 
 
-def color_for(name, palette=DEFAULT_PALETTE):
-    """Deterministic across processes, platforms and Python versions (unlike
-    the built-in hash() for strings, which is randomized per-process by
-    default) - the SAME linkage-group name always maps to the SAME palette
-    index, in genomes_to_rbh.py and in alg_parsimony.py alike, so colors
-    stay comparable across separate analyses and across the two scripts."""
-    idx = zlib.crc32(name.encode("utf-8")) % len(palette)
-    return palette[idx]
+CURATED_PALETTE = [
+    "#AB7E26", "#47957F", "#7B7B7B", "#3B69B2", "#764A9B", "#C76E00",
+    "#8B0000", "#1B9E77", "#D95F02", "#7570B3", "#E7298A", "#66A61E",
+    "#E6AB02", "#A6CEE3", "#1F78B4", "#B2DF8A", "#33A02C", "#FB9A99",
+]
+# kept as an alias so existing references still work
+DEFAULT_PALETTE = CURATED_PALETTE
 
 
-def write_rbh(path, ref_name, sp_name, rows):
+def build_palette(n):
+    """A palette of at least n visually distinct colours. The hand-picked
+    colours are used first; beyond those, colours are generated by stepping
+    the hue by the golden-ratio conjugate (which spreads successive hues as
+    evenly as possible around the wheel rather than clustering them) while
+    cycling saturation and value, so that even several dozen linkage groups
+    remain distinguishable."""
+    import colorsys
+    palette = list(CURATED_PALETTE)
+    if n <= len(palette):
+        return palette
+    golden = 0.61803398874989
+    sats = [0.85, 0.55, 0.95, 0.70]
+    vals = [0.80, 0.62, 0.93, 0.72]
+    i = 0
+    while len(palette) < n:
+        h = (0.13 + (i + 1) * golden) % 1.0
+        s = sats[i % len(sats)]
+        v = vals[(i // len(sats)) % len(vals)]
+        r, g, b = colorsys.hsv_to_rgb(h, s, v)
+        hexc = "#{:02X}{:02X}{:02X}".format(int(r * 255), int(g * 255), int(b * 255))
+        if hexc not in palette:
+            palette.append(hexc)
+        i += 1
+        if i > 5000:                      # safety valve; should never trigger
+            break
+    return palette
+
+
+def natural_key(name):
+    """Sort key treating embedded digits numerically, so cALG2 precedes
+    cALG10 rather than following it."""
+    return [int(p) if p.isdigit() else p.lower()
+            for p in re.split(r"(\d+)", str(name))]
+
+
+def assign_unique_colors(names, preassigned=None):
+    """Map each name to its own distinct colour.
+
+    Deterministic across processes and runs: each name's preferred slot comes
+    from a stable crc32 hash (not Python's hash(), which is randomized per
+    process), and collisions are resolved by probing forward to the next free
+    slot with names considered in a fixed natural-sort order. This keeps the
+    earlier guarantee that the same linkage group gets the same colour every
+    time, while also guaranteeing - as plain hashing could not - that two
+    different linkage groups never share one. With 27 groups and an 18-colour
+    palette, collisions were previously unavoidable by the pigeonhole
+    principle.
+
+    preassigned: optional name -> colour already fixed (e.g. supplied in a
+    .rbh 'color' column); those are honoured and excluded from reuse."""
+    preassigned = dict(preassigned or {})
+    ordered = sorted(names, key=natural_key)
+    palette = build_palette(len(ordered) + len(preassigned) + 4)
+
+    used = set(preassigned.values())
+    colors = dict(preassigned)
+    for name in ordered:
+        if name in colors:
+            continue
+        start = zlib.crc32(str(name).encode("utf-8")) % len(palette)
+        for step in range(len(palette)):
+            cand = palette[(start + step) % len(palette)]
+            if cand not in used:
+                colors[name] = cand
+                used.add(cand)
+                break
+        else:
+            colors[name] = palette[start]      # palette exhausted; unreachable in practice
+    return colors
+
+
+def color_for(name, palette=CURATED_PALETTE):
+    """Single-name colour lookup, kept for callers that colour one item at a
+    time. Prefer assign_unique_colors() whenever the full set of names is
+    known, since only that can guarantee distinct colours."""
+    return palette[zlib.crc32(str(name).encode("utf-8")) % len(palette)]
+
+
+def write_rbh(path, ref_name, sp_name, rows, alg_colors=None):
     """rows: list of dicts with keys ref_gene, ref_chrom, ref_pos, sp_gene, sp_scaf, sp_pos, fet,
     and optionally orthology_type ('direct' or 'wgd_inferred'; defaults to 'direct' if absent)."""
     cols = [
@@ -1148,11 +1315,17 @@ def write_rbh(path, ref_name, sp_name, rows):
     ]
     with open(path, "w") as f:
         f.write("\t".join(cols) + "\n")
+        # Colours must be assigned across the whole run's linkage groups, not per
+        # file: a per-file assignment would give the same group different colours in
+        # different taxa, since each taxon carries a different subset. Callers pass
+        # the run-wide map in; the fallback here only applies to direct calls.
+        if alg_colors is None:
+            alg_colors = assign_unique_colors({r["ref_chrom"] for r in rows})
         for i, r in enumerate(rows):
             record = {
                 "rbh": f"rbh_{ref_name}_{sp_name}_{i}",
                 "gene_group": r["ref_chrom"],
-                "color": color_for(r["ref_chrom"]),
+                "color": alg_colors[r["ref_chrom"]],
                 f"{ref_name}_gene": r["ref_gene"],
                 f"{ref_name}_scaf": r["ref_chrom"],
                 f"{ref_name}_pos": r["ref_pos"] if r["ref_pos"] is not None else "",
@@ -1188,7 +1361,8 @@ def write_duplication_report(path, all_reports):
 # ==========================================================================
 
 def process_species(sp_name, sp_info, ref_name, ref_faa, ref_gene_to_chr, ref_gene_to_pos,
-                     work_root, wgd_output_dir, args, rbh_outdir, wgd_report=None):
+                     work_root, wgd_output_dir, args, rbh_outdir, wgd_report=None,
+                     alg_colors=None):
     log(f"=== {ref_name} vs {sp_name} ===")
     sp_dir = work_root / sp_name
     sp_dir.mkdir(parents=True, exist_ok=True)
@@ -1247,7 +1421,7 @@ def process_species(sp_name, sp_info, ref_name, ref_faa, ref_gene_to_chr, ref_ge
         r["fet"] = fet_lookup.get((r["sp_scaf"], r["ref_chrom"]))
 
     out_path = rbh_outdir / f"{sp_name}.rbh"
-    write_rbh(out_path, ref_name, sp_name, rows)
+    write_rbh(out_path, ref_name, sp_name, rows, alg_colors=alg_colors)
     log(f"  -> wrote {out_path} ({len(rows)} orthologs)")
     return out_path
 
@@ -1360,16 +1534,32 @@ def main():
                              "being compared to the reference/core set). Use this once you know which "
                              "taxa are the suspected polyploids/WGD lineages, to skip the extra "
                              "self-blast cost for everything else.")
-    parser.add_argument("--wgd-min-paralog-pairs", type=int, default=5,
-                        help="Minimum intragenomic paralog-pair count to call two scaffolds ohnologous "
-                             "(default: 5)")
-    parser.add_argument("--wgd-alpha", type=float, default=0.05,
-                        help="Significance threshold for the ohnologous-scaffold-pair enrichment test "
-                             "(default: 0.05)")
+    parser.add_argument("--wgd-min-paralog-pairs", nargs="+", default=["5"],
+                        help="Minimum intragenomic paralog-pair count to call two scaffolds ohnologous. "
+                             "Give one number for every --wgd-species, or per-species values as "
+                             "SPECIES=N (e.g. '30 Limulus=40 Mgig=25': 30 for any species not named). "
+                             "Counts scale with genome size and gene content, so genomes with very "
+                             "different duplication histories usually need different values; use "
+                             "calibrate_wgd.py to choose them (default: 5)")
+    parser.add_argument("--wgd-alpha", nargs="+", default=["0.05"],
+                        help="Significance threshold for the ohnologous-scaffold-pair enrichment test; "
+                             "one value, or per-species SPECIES=A entries as for "
+                             "--wgd-min-paralog-pairs (default: 0.05)")
     parser.add_argument("--forward", nargs=argparse.REMAINDER, default=[],
                         help="Everything after this flag is passed through verbatim to "
                              "alg_parsimony.py, e.g. --forward --min-genes 3 --constraint '(...)'")
     args = parser.parse_args()
+
+    # Validate per-species WGD thresholds up front, so a typo in a species name
+    # fails loudly instead of silently falling back to the default value.
+    for flag, vals, cast in (("--wgd-min-paralog-pairs", args.wgd_min_paralog_pairs, int),
+                             ("--wgd-alpha", args.wgd_alpha, float)):
+        _, per = parse_per_species(vals, cast, flag)
+        if per and args.wgd_species:
+            unknown = set(per) - set(args.wgd_species)
+            if unknown:
+                sys.exit(f"{flag} names {sorted(unknown)}, which are not in --wgd-species "
+                         f"{args.wgd_species}")
 
     args.rbh_outdir.mkdir(parents=True, exist_ok=True)
     work_root = args.work_dir or (args.rbh_outdir / "_work")
@@ -1444,6 +1634,9 @@ def main():
         ref_faa = get_search_ready_faa(ref_name, ref_info, ref_work_dir, args.wgd_output_dir,
                                         args.genetic_code, ref_gene_to_chr, args)
         log(f"reference species: {ref_name} ({len(set(ref_gene_to_chr.values()))} distinct scaffolds/chromosomes)")
+        # One colour map for the whole run: the reference's chromosomes are the
+        # linkage groups, so every taxon's .rbh file shares the same assignment.
+        run_alg_colors = assign_unique_colors(set(ref_gene_to_chr.values()))
 
         written = []
         wgd_report = {}
@@ -1453,7 +1646,8 @@ def main():
             try:
                 out_path = process_species(sp_name, sp_info, ref_name, ref_faa, ref_gene_to_chr,
                                             ref_gene_to_pos, work_root, args.wgd_output_dir, args,
-                                            args.rbh_outdir, wgd_report=wgd_report)
+                                            args.rbh_outdir, wgd_report=wgd_report,
+                                            alg_colors=run_alg_colors)
                 if out_path:
                     written.append(out_path)
             except subprocess.CalledProcessError as e:

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/anvaya_logo.png" alt="Anvaya" width="720">
+  <img src="assets/anvaya_logo.png" alt="Anvaya" width="420">
 </p>
 
 # Anvaya
@@ -17,14 +17,64 @@ post-fusion **mixing** as discrete characters.
 | **`calibrate_wgd.py`** | Calibrates `--wgd-min-paralog-pairs` per taxon from a diagnostic run, using karyotype expectation rather than significance. |
 
 **A full tutorial with eight worked examples is provided as
-`Anvaya_tutorial.pdf`** — covering duplicated vs. unduplicated genomes, both
-operating modes, threshold tuning, figure generation and troubleshooting, with
-runnable scripts for cases across animals and plants.
+[`docs/Anvaya_tutorial.pdf`](docs/Anvaya_tutorial.pdf)** — covering duplicated
+vs. unduplicated genomes, both operating modes, threshold tuning, figure
+generation and troubleshooting, with runnable scripts for cases across animals
+and plants.
+
+---
+
+## Install
+
+Anvaya is a set of standalone scripts. There is nothing to build and nothing to
+install into your Python path — clone it and run it.
+
+```bash
+git clone https://github.com/REPLACE-ME/anvaya.git
+cd anvaya
+pip install -r requirements.txt
+```
 
 Only `pandas` is a hard requirement. `matplotlib` (figures), `scipy`
 (enrichment tests), `biopython` (CDS→protein translation) and `diamond`
 (orthology search) are used when available and degrade gracefully — with a
 warning, not a crash — when they are not.
+
+`diamond` is not pip-installable and must be on your `PATH` for
+`genomes_to_rbh.py`:
+
+```bash
+conda install -c bioconda diamond        # or your package manager
+```
+
+Then check the install end to end, which needs no data of your own:
+
+```bash
+bash tests/smoke_test.sh
+```
+
+That builds a synthetic dataset with a designed, known tree and asserts that
+Anvaya recovers it — so it exercises the whole parsimony side without needing
+`diamond`. For a test that *does* exercise the orthology search, run
+[`examples/05_toy_dataset_test.sh`](examples/05_toy_dataset_test.sh).
+
+### Workflow
+
+![Anvaya workflow](docs/Figure1_workflow.png)
+
+### What is in this repository
+
+| Path | |
+|---|---|
+| `alg_parsimony.py`, `genomes_to_rbh.py` | The two main programs. |
+| `sweep_consensus_params.py`, `calibrate_wgd.py` | Parameter-choice helpers. Not optional in practice — see below. |
+| `make_toy_dataset.py` | Synthetic genomes with known ground truth. |
+| `examples/` | Runnable scripts for each route through the toolkit, numbered in the order you would meet them. |
+| `examples/tnt/` | TNT scripts for cross-checking the search, plus the pitfalls that cost us a day each. |
+| `docs/` | Tutorial PDF and the workflow figure. |
+| `mock_figures/` | The example figures below, and the script that renders them. |
+| `tests/smoke_test.sh` | The install check, also run by CI. |
+| `tools/` | Scripts that render the logo and the workflow figure. Not needed to run an analysis. |
 
 ---
 
@@ -678,6 +728,18 @@ diameter and ringed) forming paired diagonals across ohnologous chromosomes.
 
 ## Example scripts
 
+Each of these is also a runnable file in [`examples/`](examples/), so you can
+edit a copy rather than paste out of a README:
+
+| | |
+|---|---|
+| [`01_quickstart_from_rbh.sh`](examples/01_quickstart_from_rbh.sh) | You already have `.rbh` tables. No `diamond` needed. |
+| [`02_full_run_reference_mode.sh`](examples/02_full_run_reference_mode.sh) | Raw genomes, single-reference mode. |
+| [`03_consensus_mode_with_wgd.sh`](examples/03_consensus_mode_with_wgd.sh) | Consensus mode with WGD lineages, in three steps. **Start here for real work.** |
+| [`04_sensitivity.sh`](examples/04_sensitivity.sh) | Are the conclusions stable across thresholds? |
+| [`05_toy_dataset_test.sh`](examples/05_toy_dataset_test.sh) | End-to-end test against known ground truth. |
+| [`06_wgd_calibration.sh`](examples/06_wgd_calibration.sh) | Per-taxon `--wgd-min-paralog-pairs` calibration. |
+
 ### 1. Quick start from existing `.rbh` files
 
 ```bash
@@ -944,3 +1006,63 @@ reported as synapomorphies on the clades they support.
   CDS→protein translation
 - **`paup`** / **`tnt`** on `PATH` — optional, only for `--run-paup` /
   `--run-tnt`
+
+`pip install -r requirements.txt` covers everything pip can install. CI tests
+Python 3.9, 3.11 and 3.13.
+
+---
+
+## Cross-checking the search
+
+The heuristic search is an NNI hill-climber. For any result you intend to
+publish, export the matrix and verify the score in TNT or PAUP\*:
+
+```bash
+python3 alg_parsimony.py … --export-tnt --export-nexus
+```
+
+[`examples/tnt/`](examples/tnt/) has working scripts for both the reversible and
+the irreversible model, with the constrained bootstrap set up, and documents the
+specific traps — `force` without `constrain=;` silently running unconstrained,
+`tsave` writing binary without the asterisk, `outgroup` having to precede
+`force`, and comparing a constrained score against an unconstrained one.
+
+Anvaya also cross-checks itself: the reversible and irreversible searches each
+score the other's best topologies, and a `[warn] the … search returned score …`
+line in `report.txt` means one search found something the other missed. Treat
+that as a signal to raise `--restarts` and to go to TNT.
+
+---
+
+## Citing
+
+If you use Anvaya, please cite the paper and the software. Machine-readable
+metadata is in [`CITATION.cff`](CITATION.cff), which GitHub renders as a "Cite
+this repository" button once the placeholders in it are filled in.
+
+> Kulkarni, S. S. (2026) *Anvaya: phylogenetic analysis of chromosome
+> fusion-and-mixing characters detecting shared whole genome duplication.*
+
+Also cite the tools Anvaya depends on for your run — at minimum DIAMOND for the
+orthology search, and TNT or PAUP\* if you report a cross-checked score.
+
+---
+
+## License
+
+MIT — see [`LICENSE`](LICENSE).
+
+---
+
+## Contributing
+
+Issues and pull requests are welcome. Two things make a bug report
+actionable:
+
+1. the full command you ran, and
+2. `report.txt` from the run, which records every warning the run emitted.
+
+If you are changing the parsimony or consensus logic, run
+`bash tests/smoke_test.sh` first — it asserts that a dataset with a designed
+tree still recovers that tree, which is the check most likely to catch a
+regression.

@@ -1,0 +1,45 @@
+cff-version: 1.2.0
+message: "If you use Anvaya, please cite both the software and the paper below."
+title: "Anvaya: a toolkit for parsimony analysis of chromosome fusion-and-mixing characters"
+abstract: >-
+  Anvaya turns chromosome-scale synteny data into a parsimony-based
+  phylogenetic hypothesis. It builds reciprocal-best-hit orthology with
+  DIAMOND, defines ancestral linkage groups from either a single reference
+  genome or a multi-genome consensus, scores ancestral-linkage-group fusion
+  and post-fusion mixing as discrete irreversible characters, and reconstructs
+  trees under both reversible and Camin-Sokal criteria with bootstrap,
+  permutation and consistency-index support. It additionally detects and
+  rescues ohnologs from whole-genome duplications, which plain reciprocal best
+  hit otherwise discards.
+type: software
+license: MIT
+repository-code: "https://github.com/REPLACE-ME/anvaya"
+url: "https://github.com/REPLACE-ME/anvaya"
+keywords:
+  - macrosynteny
+  - ancestral linkage groups
+  - parsimony
+  - phylogenomics
+  - chromosome evolution
+  - whole-genome duplication
+  - comparative genomics
+authors:
+  - family-names: Kulkarni
+    given-names: Siddharth S.
+    affiliation: "CSIR-Centre for Cellular and Molecular Biology, Hyderabad, India"
+    # orcid: "https://orcid.org/REPLACE-ME"
+# Add co-authors here in the same shape, in the paper's author order.
+
+# The accompanying paper. Fill in the year, venue and DOI once it is out, and
+# update 'preferred-citation' to the journal article at that point.
+preferred-citation:
+  type: article
+  title: >-
+    Anvaya: phylogenetic analysis of chromosome fusion-and-mixing characters
+    detecting shared whole genome duplication
+  authors:
+    - family-names: Kulkarni
+      given-names: Siddharth S.
+  year: 2026
+  journal: "REPLACE-ME"
+  # doi: "REPLACE-ME"
