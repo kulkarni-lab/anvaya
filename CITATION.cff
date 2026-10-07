@@ -13,8 +13,8 @@ abstract: >-
   hit otherwise discards.
 type: software
 license: MIT
-repository-code: "https://github.com/REPLACE-ME/anvaya"
-url: "https://github.com/REPLACE-ME/anvaya"
+repository-code: https://github.com/kulkarni-lab/anvaya"
+url: "https://github.com/kulkarni-lab/anvaya"
 keywords:
   - macrosynteny
   - ancestral linkage groups
@@ -41,5 +41,5 @@ preferred-citation:
     - family-names: Kulkarni
       given-names: Siddharth S.
   year: 2026
-  journal: "REPLACE-ME"
+  journal: "submitted"
   # doi: "REPLACE-ME"
