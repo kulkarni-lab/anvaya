@@ -16,11 +16,6 @@ post-fusion **mixing** as discrete characters.
 | **`sweep_consensus_params.py`** | Sweeps the three consensus-mode thresholds and writes one TSV summarising the linkage-group counts, to guide parameter choice. |
 | **`calibrate_wgd.py`** | Calibrates `--wgd-min-paralog-pairs` per taxon from a diagnostic run, using karyotype expectation rather than significance. |
 
-**A full tutorial with eight worked examples is provided as
-[`docs/Anvaya_tutorial.pdf`](docs/Anvaya_tutorial.pdf)** — covering duplicated
-vs. unduplicated genomes, both operating modes, threshold tuning, figure
-generation and troubleshooting, with runnable scripts for cases across animals
-and plants.
 
 ---
 
@@ -1036,12 +1031,10 @@ that as a signal to raise `--restarts` and to go to TNT.
 
 ## Citing
 
-If you use Anvaya, please cite the paper and the software. Machine-readable
-metadata is in [`CITATION.cff`](CITATION.cff), which GitHub renders as a "Cite
-this repository" button once the placeholders in it are filled in.
+If you use Anvaya, please cite the paper and the software as:
 
-> Kulkarni, S. S. (2026) *Anvaya: phylogenetic analysis of chromosome
-> fusion-and-mixing characters detecting shared whole genome duplication.*
+> Kulkarni, S. (submitted) *Anvaya: phylogenomic analysis of chromosome fusion-and-mixing 
+> characters and detection of shared whole-genome duplication.*
 
 Also cite the tools Anvaya depends on for your run — at minimum DIAMOND for the
 orthology search, and TNT or PAUP\* if you report a cross-checked score.
