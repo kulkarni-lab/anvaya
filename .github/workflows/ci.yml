@@ -1,0 +1,41 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -r requirements.txt
+      - name: smoke test
+        run: bash tests/smoke_test.sh
+      - name: scorer and search
+        run: python3 tests/test_engine.py
+      - name: determinism across PYTHONHASHSEED
+        run: bash tests/test_determinism.sh
+
+  toy-with-diamond:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: conda-incubator/setup-miniconda@v3
+        with:
+          python-version: "3.11"
+          channels: conda-forge,bioconda
+          channel-priority: strict
+      - run: conda install -y diamond pandas matplotlib scipy biopython numpy
+      - name: five toy-dataset validations (V1-V5)
+        run: bash tests/validate_toy.sh
