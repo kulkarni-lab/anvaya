@@ -11,12 +11,19 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.9", "3.11", "3.13"]
+    defaults:
+      run:
+        shell: bash -el {0}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      # Python from conda-forge: the runner image's own builds of older Python
+      # versions are not available on every Ubuntu release.
+      - uses: conda-incubator/setup-miniconda@v3
         with:
           python-version: ${{ matrix.python-version }}
-      - run: pip install -r requirements.txt
+          channels: conda-forge
+          channel-priority: strict
+      - run: python3 --version && pip install -r requirements.txt
       - name: smoke test
         run: bash tests/smoke_test.sh
       - name: scorer and search
