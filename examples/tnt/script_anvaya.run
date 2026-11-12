@@ -1,0 +1,42 @@
+log tnt_constrained.log;
+report=;
+watch=;
+taxname=;
+mxram 2500;
+
+nstates num;
+nstates nogaps;
+
+proc matrix_data.tnt;
+
+cc - .;
+collapse 6;
+hold 10000;
+rseed 30861;
+
+outgroup Espinosa;
+
+force =
+(Espinosa ((((Dand5885 Dret6085 Dsil9745 Hyas Ixod) (Avul Otur)) (Neoseiu Phytos Varr)) (Blom Sarc)));
+
+constrain=;
+
+ienum;
+tsave *constrained.tre;
+save;
+tsave/;
+
+export - constrained.nex;
+
+resample nogc boot rep 1000 freq savetrees [
+  ienum;
+];
+
+tsave *bootstrap_trees.tre;
+save;
+tsave/;
+
+export - constrained_bootstrap.nex;
+
+log/;
+zzz;

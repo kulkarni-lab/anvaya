@@ -1,0 +1,5 @@
+dataset	criterion	tbr_score	tbr_hits	tbr_seconds	long_tbr_score	long_tbr_hits	long_tbr_seconds	nni10_score	nni10_seconds	nni500_score	nni500_seconds	tnt_score
+1	reversible	64	18/20	3.4	64	99/100	5.2	73	1.6	68	83.8	64
+2	reversible	68	20/20	3.4	68	100/100	5.7	74	1.7	69	82.2	68
+3	reversible	64	19/20	3.3	64	100/100	3.1	69	1.5	66	77.8	64
+4	reversible	61	19/20	3.7	61	99/100	5.7	69	1.8	63	83.9	61

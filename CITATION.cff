@@ -1,0 +1,26 @@
+cff-version: 1.2.0
+message: "If you use Anvaya, please cite the software (this record) and the accompanying paper."
+title: "Anvaya: parsimony analysis of chromosome fusion-and-mixing characters"
+type: software
+version: 1.0.1b
+repository-code: "https://github.com/kulkarni-lab/anvaya"
+license: MIT
+authors:
+  - family-names: Kulkarni
+    given-names: Siddharth
+    affiliation: "CSIR-Centre for Cellular and Molecular Biology, Hyderabad, India"
+    orcid: "https://orcid.org/0000-0002-7400-4704"
+keywords:
+  - macrosynteny
+  - ancestral linkage groups
+  - parsimony
+  - whole-genome duplication
+preferred-citation:
+  type: article
+  title: "Anvaya: phylogenomic analysis of chromosome fusion-and-mixing characters and detection of shared whole-genome duplication"
+  authors:
+    - family-names: Kulkarni
+      given-names: Siddharth
+  journal: "bioRxiv"
+  doi: "10.64898/2026.10.08.757583"
+  year: 2026

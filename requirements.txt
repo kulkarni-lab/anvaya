@@ -1,0 +1,26 @@
+# Anvaya dependencies
+#
+#   pip install -r requirements.txt
+#
+# Only pandas is a hard requirement. Everything else is optional: Anvaya
+# detects what is present and degrades with a warning rather than a crash.
+# Install all of it unless you have a reason not to - the optional parts
+# cover every figure and every statistical test.
+
+# --- required ---------------------------------------------------------------
+pandas>=1.0
+
+# --- optional, but install these unless you have a reason not to -----------
+matplotlib>=3.3        # every --plot-* output (dotplots, ribbons, trees, heatmaps)
+numpy>=1.18            # required by matplotlib; also used directly in plotting
+scipy>=1.5             # Fisher's exact tests; without it, count-only thresholds
+biopython>=1.78        # CDS -> protein translation, only when a species has no .pep
+
+# --- optional, only for mock_figures/assemble_mock_figures.py --------------
+# pdf2image             # also needs the poppler system package
+
+# --- NOT installable with pip; put these on PATH yourself ------------------
+#   diamond   required by genomes_to_rbh.py for the orthology search
+#             conda install -c bioconda diamond
+#   paup      optional, only for --run-paup
+#   tnt       optional, only for --run-tnt

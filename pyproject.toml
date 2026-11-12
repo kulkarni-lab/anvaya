@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "anvaya"
+version = "1.0.1b"
+description = "Parsimony analysis of chromosome fusion-and-mixing characters from macrosynteny, with ohnolog rescue for whole-genome duplication"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Siddharth Kulkarni" }]
+requires-python = ">=3.9"
+dependencies = ["pandas>=1.0"]
+keywords = ["macrosynteny", "ancestral linkage groups", "parsimony", "phylogenetics",
+            "whole-genome duplication", "chromosome evolution"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Operating System :: OS Independent",
+]
+
+[project.optional-dependencies]
+full = ["matplotlib>=3.3", "numpy>=1.18", "scipy>=1.5", "biopython>=1.78"]
+
+[project.urls]
+Homepage = "https://github.com/kulkarni-lab/anvaya"
+Issues = "https://github.com/kulkarni-lab/anvaya/issues"
+
+[project.scripts]
+anvaya-parsimony = "alg_parsimony:main"
+anvaya-rbh = "genomes_to_rbh:main"
+anvaya-sweep = "sweep_consensus_params:main"
+anvaya-calibrate-wgd = "calibrate_wgd:main"
+anvaya-toy = "make_toy_dataset:main"
+
+[tool.setuptools]
+py-modules = ["alg_parsimony", "genomes_to_rbh", "sweep_consensus_params",
+              "calibrate_wgd", "make_toy_dataset"]

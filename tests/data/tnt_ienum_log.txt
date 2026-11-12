@@ -1,0 +1,27 @@
+TNT - max. ram = 1000.00 Mbytes
+No ram used yet
+Taxon names is ON
+Matrices will be read as alpha-numeric data
+Matrix space: allocate for up to 16 states
+'Anvaya fusion/mixing characters (0 unfused, 1 fused-clean, 2 fused-mixed)'
+Matrix (250x13, 16 states). Memory required for data:   0.32 Mbytes
+Random seed is 1
+Space for 10000 trees in memory
+Outgroup is taxon 5  -  Espinosa
+Read
+     0 negative constraints
+     0 positive constraints
+     7 tree-constraints
+Constraints is ON
+Constraints enforced during search.
+Implicit enumeration, 1 trees found, score 459.
+Tree lengths
+
+             0
+
+      0    459
+
+Tree file: character_matrix.tre
+1 trees saved to character_matrix.tre
+Closing character_matrix.tre (with 1 trees saved)
+Saved trees (Nexus format) to file character_matrix_trees.nex

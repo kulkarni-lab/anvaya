@@ -1,0 +1,1069 @@
+<p align="center">
+  <img src="assets/anvaya_logo.png" alt="Anvaya" width="420">
+</p>
+
+# Anvaya
+
+A toolkit for turning chromosome-scale synteny data into a parsimony-based
+phylogenetic hypothesis, using ancestral-linkage-group (ALG) **fusion** and
+post-fusion **mixing** as discrete characters.
+
+| Script | Purpose |
+|---|---|
+| **`genomes_to_rbh.py`** | Raw genomes → `.rbh` ortholog tables. Builds reciprocal-best-hit orthology with DIAMOND, defines linkage groups from either one reference genome or a multi-genome consensus, optionally filters short scaffolds and rescues whole-genome-duplication ohnologs. |
+| **`alg_parsimony.py`** | `.rbh` tables → character matrix, parsimony trees, synapomorphies, support statistics and publication figures. |
+| **`make_toy_dataset.py`** | Generates a small synthetic dataset with known ground truth, for testing the pipeline end to end (including against a real DIAMOND install). |
+| **`sweep_consensus_params.py`** | Sweeps the three consensus-mode thresholds and writes one TSV summarising the linkage-group counts, to guide parameter choice. |
+| **`calibrate_wgd.py`** | Calibrates `--wgd-min-paralog-pairs` per taxon from a diagnostic run, using karyotype expectation rather than significance. |
+
+
+---
+
+## Install
+
+Anvaya is a set of standalone scripts. There is nothing to build and nothing to
+install into your Python path — clone it and run it.
+
+```bash
+git clone https://github.com/kulkarni-lab/anvaya.git
+cd anvaya
+git checkout v1.0.0            # the release cited in the paper
+pip install -r requirements.txt
+# or, to get the anvaya-* commands on your PATH:
+pip install ".[full]"
+```
+
+Only `pandas` is a hard requirement. `matplotlib` (figures), `scipy`
+(enrichment tests), `biopython` (CDS→protein translation) and `diamond`
+(orthology search) are used when available and degrade gracefully — with a
+warning, not a crash — when they are not.
+
+`diamond` is not pip-installable and must be on your `PATH` for
+`genomes_to_rbh.py`:
+
+```bash
+conda install -c bioconda diamond        # or your package manager
+```
+
+Then check the install end to end, which needs no data of your own:
+
+```bash
+bash tests/smoke_test.sh
+```
+
+That builds a synthetic dataset with a designed, known tree and asserts that
+Anvaya recovers it — so it exercises the whole parsimony side without needing
+`diamond`. For a test that *does* exercise the orthology search, run
+[`examples/05_toy_dataset_test.sh`](examples/05_toy_dataset_test.sh).
+
+### Workflow
+
+![Anvaya workflow](docs/Figure1_workflow.png)
+
+### What is in this repository
+
+| Path | |
+|---|---|
+| `alg_parsimony.py`, `genomes_to_rbh.py` | The two main programs. |
+| `sweep_consensus_params.py`, `calibrate_wgd.py` | Parameter-choice helpers. Not optional in practice — see below. |
+| `make_toy_dataset.py` | Synthetic genomes with known ground truth. |
+| `examples/` | Runnable scripts for each route through the toolkit, numbered in the order you would meet them. |
+| `examples/tnt/` | TNT scripts for cross-checking the search, plus the pitfalls that cost us a day each. |
+| `docs/` | The workflow figure. |
+| `benchmarks/` | `search_benchmark.py`: checks the tree search against exact branch and bound and, optionally, TNT. |
+| `mock_figures/` | The example figures below, and the script that renders them. |
+| `tests/` | `smoke_test.sh` (install check), `test_engine.py` (scorer and search), `test_determinism.sh` (same seed, same result), `validate_toy.sh` (the five toy validations; needs DIAMOND). All run by CI. |
+| `tools/` | Scripts that render the logo and the workflow figure. Not needed to run an analysis. |
+
+---
+
+## Before anything else: which of your genomes are duplicated?
+
+Anvaya defines linkage groups from either one **reference** genome or a set of
+**core** genomes. Those genomes must not carry a whole-genome duplication (WGD)
+that the rest of your sample does not share.
+
+Reciprocal best hit is a strict 1:1 mapping, so a duplicated genome breaks it:
+
+- **As a reference** — each ancestral chromosome is present twice and gets
+  registered as *two* linkage groups, making every non-duplicated taxon look
+  like it is missing half of each.
+- **As a core genome** — orthogroups containing two genes from the same core
+  genome are discarded as ambiguous, so its ohnologous orthogroups vanish
+  silently and gut the reconstruction.
+
+> **Rule:** duplicated lineages belong on the *comparison* side, never in
+> `--reference-species` or `--consensus-species`. Flag them with
+> `--detect-wgd --wgd-species …` so their dropped ohnologs are recovered.
+
+**"Duplicated" is relative to your sample.** All vertebrates share the ancient
+2R rounds, so among vertebrates 2R is shared ancestry and causes no asymmetry.
+Add an invertebrate outgroup and 2R becomes lineage-specific *relative to it*.
+Always ask: duplicated relative to what?
+
+| Lineage | Status |
+|---|---|
+| Nematodes, insects, ticks/mites, sea spiders | Unduplicated — good core/reference taxa |
+| Amphioxus, spotted gar, *Xenopus tropicalis*, *Amborella* | Unduplicated relative to their usual comparators — ideal references |
+| Most molluscs and annelids | Usually unduplicated — verify per species |
+| Teleost fish (3R) | **Duplicated** — comparison side |
+| Salmonids (3R + 4R) | **Duplicated**, multiple rounds — partial rescue only |
+| *Xenopus laevis* (allotetraploid) | **Duplicated** — use *X. tropicalis* as reference |
+| Spiders, scorpions, whip scorpions (Arachnopulmonata) | **Duplicated** — comparison side |
+| Horseshoe crabs (Xiphosura) | **Duplicated**, multiple rounds — partial rescue only |
+| Most crop plants (wheat, soy, *Brassica*) | **Duplicated** — verify per species |
+
+`--detect-wgd` was designed and validated for a **single, clean, pairwise**
+duplication. Lineages with multiple rounds, or heavily rearranged post-WGD
+genomes, get partial rescue — a substantial improvement on the plain-RBH false
+negative, but treat it as a lower bound and inspect `duplication_blocks.tsv`.
+
+
+## Which script do I start with?
+
+```
+Do you already have .rbh files built against a real ALG reference
+(BCnSSimakov2022_*, odp_LGs_from_*, or similar)?
+                    |
+        ┌───────────┴───────────┐
+       YES                      NO
+        |                        |
+alg_parsimony.py          genomes_to_rbh.py first
+directly                  (builds .rbh from raw genomes,
+                           then calls alg_parsimony.py)
+```
+
+---
+
+## Flag reference
+
+Every flag, one line each. Defaults in brackets.
+
+### `genomes_to_rbh.py`
+
+**Input / output**
+
+| Flag | Meaning |
+|---|---|
+| `--input-dir` | Directory of genomes: `{name}.cds` + `{name}.gff3\|.gtf` (+ optional `{name}.pep`) per species. |
+| `--rbh-outdir` | Where to write the `.rbh` tables (required). |
+| `--species` | Restrict the run to these species, plus the reference/core set [all discovered]. |
+| `--work-dir` | Scratch directory for DIAMOND databases and intermediates [inside `--rbh-outdir`]. |
+| `--rbh-only` | Stop after writing `.rbh` files; don't run the parsimony step. |
+| `--parsimony-script` | Path to `alg_parsimony.py` [auto-detected next to this script, in `$PWD`, or on `$PATH`]. |
+| `--parsimony-outdir` | Where `alg_parsimony.py` should write its output. |
+| `--forward` | Everything after this is passed straight through to `alg_parsimony.py`. |
+
+**Linkage-group definition** (pick exactly one mode)
+
+| Flag | Meaning |
+|---|---|
+| `--reference-species` | Single-reference mode: this genome's own chromosomes *are* the linkage groups. Fast; not itself a taxon in the tree. |
+| `--consensus-species` | Consensus mode: reconstruct linkage groups de novo from these ≥2 "core" genomes. All genomes, core included, become taxa. |
+| `--consensus-min-species` | An orthogroup must be found in at least this many core genomes to be used [all core species]. |
+| `--consensus-min-frac` | Fraction of core genomes that must agree two orthogroups are co-located before merging them into one linkage group [1.0 = unanimous]. |
+| `--consensus-min-alg-orthogroups` | Discard any reconstructed linkage group with fewer than this many member orthogroups [1 = keep everything]. |
+
+**Filtering and duplication**
+
+| Flag | Meaning |
+|---|---|
+| `--min-scaffold-length` | Exclude genes on scaffolds shorter than this many bp from the orthology search entirely [0 = off]. |
+| `--detect-wgd` | Detect retained whole-genome/segmental duplication and rescue ohnologs that plain reciprocal-best-hit silently drops. |
+| `--wgd-species` | Restrict `--detect-wgd` to these species [all non-reference/non-core species]. |
+| `--wgd-min-paralog-pairs` | Minimum intragenomic paralog pairs to call two scaffolds ohnologous [5]. |
+| `--wgd-alpha` | Significance cutoff for the ohnologous-scaffold enrichment test [0.05]. |
+| `--translation-dir` | Reuse protein FASTAs translated earlier, laid out as `DIR/<species>/<species>.faa`. |
+
+**Search parameters**
+
+| Flag | Meaning |
+|---|---|
+| `--evalue` | DIAMOND E-value cutoff [1e-3]. |
+| `--max-target-seqs` | DIAMOND hits retained per query [5]. |
+| `--threads` | DIAMOND threads [4]. |
+| `--genetic-code` | NCBI translation table for CDS→protein [1]. |
+| `--no-reuse-blast` | Recompute alignments even if a cached result with the same `--evalue`/`--max-target-seqs` exists in the work directory [off; cached results are reused]. |
+
+### `alg_parsimony.py`
+
+**Input / output**
+
+| Flag | Meaning |
+|---|---|
+| `--indir` | Directory of `.rbh` files, one per taxon (required). |
+| `--outdir` | Output directory [`alg_parsimony_out`]. |
+| `--reference-prefix` | Override auto-detection of the shared ALG/reference column prefix. |
+
+**Character calling**
+
+| Flag | Meaning |
+|---|---|
+| `--alpha` | `whole_FET` significance cutoff for calling an ALG present on a scaffold [0.05]. |
+| `--min-genes` | Minimum shared orthologs to call an ALG present [3]. |
+| `--mixing-threshold` | Fraction of gene-order switches along a fused scaffold above which the fusion is "mixed" (state 2) rather than "clean" (state 1) [0.3]. |
+
+**Tree search**
+
+| Flag | Meaning |
+|---|---|
+| `--outgroup` | Taxon to root the irreversible analysis on [auto: fewest derived states — verify this choice]. |
+| `--constraint` | Backbone constraint as a Newick string or file; may name any subset of taxa, polytomies allowed. |
+| `--search` | `auto` (exhaustive up to `--max-exhaustive` taxa, otherwise `tbr`), `exhaustive`, `exact` (branch and bound seeded with the TBR score; practical to ~14 taxa), `tbr` (random-addition Wagner + TBR + parsimony ratchet), or `nni` (pre-1.0 hill-climber, only for reproducing old results) [auto]. |
+| `--max-exhaustive` | Taxon-count ceiling for exhaustive enumeration under `--search auto` [8]. |
+| `--replicates` | Independent random-addition replicates in the TBR search [20]. |
+| `--ratchet` | Parsimony-ratchet iterations per replicate [10]. |
+| `--hold` | Maximum number of equally parsimonious trees kept [100]. |
+| `--seed` | Random seed. The same seed, inputs and version give identical results on any machine [1]. |
+| `--threads` | Worker processes for TBR replicates, bootstrap and permutation replicates; 0 = all CPUs [1]. Results do not depend on it. On a cluster use the cores you requested, e.g. `--threads $NCPUS` (PBS). |
+
+**Support and diagnostics**
+
+| Flag | Meaning |
+|---|---|
+| `--bootstrap N` | Nonparametric bootstrap replicates; support is written both into the `.nwk` file and a `.tsv` [0 = off]. |
+| `--bootstrap-restarts`, `--bootstrap-ratchet` | Replicates / ratchet iterations per bootstrap pseudoreplicate [same as `--replicates` / `--ratchet`]. Lowering them speeds the bootstrap at the cost of a weaker search per pseudoreplicate; the values used are written to `report.txt`. |
+| `--permutation-test N` | Signal-test replicates: does the matrix beat randomly shuffled data at all? [0 = off]. |
+| `--permutation-restarts`, `--permutation-ratchet` | The same for permutation replicates [same as `--replicates` / `--ratchet`]. |
+| `--rate-model` | Fit branch rate models (Poisson and Brownian-increment) to per-branch event counts and test whether some branches are elevated. Writes `rate_models_<run>.tsv` and `branch_events_<run>.tsv`. |
+| `--rate-tree` | Newick file with branch lengths (e.g. time-calibrated) to scale event counts by. Without it, branches are assumed equal — a test of events per branch, not per unit time. |
+| `--rate-bootstrap` | Parametric bootstrap replicates for the rate test [1000]. Report this p-value, not the chi-square: these matrices are too small for reliable asymptotics. |
+
+CI/RI homoplasy indices are always computed — no flag needed.
+
+**Figures**
+
+| Flag | Meaning |
+|---|---|
+| `--plot-dotplots` | Oxford-style synteny dot plot per taxon. |
+| `--plot-ideograms` | Chromosome-painting bars per taxon — the collapsed version of the dot plot. |
+| `--plot-ribbon` | Multi-track ribbon/riparian plot connecting orthologs between adjacent taxa. |
+| `--ribbon-order` | Explicit top-to-bottom taxon order for the ribbon plot; any subset of ≥2 taxa. |
+| `--ribbon-order-from-tree` | Order ribbon tracks by a ladderized traversal of the `reversible` or `irreversible` tree, so clades stay contiguous. |
+| `--ribbon-include-reference` | Add the linkage-group reference (consensus cALGs, or the reference genome's chromosomes) as the top ribbon track — unfused by construction, so it reads as the ancestral baseline. |
+| `--ribbon-sort-chromosomes` | Reorder each track's chromosomes to minimise ribbon crossings between adjacent tracks (barycenter heuristic). Reports crossings before and after. |
+| `--ribbon-chrom-gap` | Gap between chromosomes on a ribbon track, as a fraction of that track's width [0.015]. |
+| `--ribbon-width-frac` | Ribbon width as a fraction of one gene slot; the remainder is white space between ribbons [0.55]. |
+| `--plot-matrix` | Taxa × characters heatmap of the character matrix. |
+| `--plot-trees` | Rendered cladogram per criterion, with synapomorphies labelled on branches. |
+| `--plot-called-only` | Restrict dot plots, ideograms and the ribbon plot to orthologs whose association actually cleared `--min-genes`/`--alpha`, so figures match the evidence behind the characters. Does not affect the matrix, tree or any statistic. |
+| `--ribbon-per-gene` | Draw one ribbon per ortholog instead of collapsing consecutive runs into syntenic-block ribbons. Blocks are the default: they read more cleanly and cut the file size dramatically (1870 KB → 35 KB on a 13-taxon set). |
+| `--rasterize-ribbons` | Rasterize only the ribbon layer, leaving bars, labels and axes as editable vectors. A last resort for very dense datasets; usually produces a *larger* file than block ribbons. |
+| `--plot-format` | `pdf`, `png` or `svg` for every figure [pdf]. |
+| `--highlight-wgd` | Extra dot plot + ribbon plot + summary table highlighting WGD-rescued orthologs. |
+
+**Interoperability**
+
+| Flag | Meaning |
+|---|---|
+| `--export-nexus` | Write a NEXUS matrix with a PAUP* command block. |
+| `--export-tnt` | Write two self-contained TNT scripts: `character_matrix.tnt` (reversible) and `character_matrix_irreversible.tnt` (Sankoff step matrix + all-zero ancestor). Run with `tnt "proc character_matrix.tnt;"`. |
+| `--run-paup` / `--run-tnt` | Also execute PAUP*/TNT if present on the system. |
+| `--paup-bin` / `--tnt-bin` | Executable name or path [`paup`, `tnt`]. |
+
+### `sweep_consensus_params.py`
+
+| Flag | Meaning |
+|---|---|
+| `--input-dir`, `--consensus-species` | As for `genomes_to_rbh.py` (required). |
+| `--outdir` | Directory for intermediate runs and the summary TSV [`consensus_sweep`]. |
+| `--out-tsv` | Path for the summary TSV [`<outdir>/consensus_sweep_summary.tsv`]. |
+| `--min-species` | Values of `--consensus-min-species` to sweep. |
+| `--min-frac` | Values of `--consensus-min-frac` to sweep [1.0 0.75 0.5]. |
+| `--min-alg-orthogroups` | Values to report; derived arithmetically from each reconstruction, so extra values are nearly free [1 5 10 15 20 30]. |
+| `--plot` | Also write the three-panel threshold-selection figure (requires matplotlib). |
+| `--plot-out` | Path for that figure [`<outdir>/consensus_thresholds.png`]; the extension sets the format, so use `.pdf` for vector. |
+| `--chosen-min-species` | Which `--min-species` value the heatmaps show, and which sizes file panel A is drawn from [lowest swept]. |
+| `--chosen-min-frac` | Highlight this `--min-frac` in the figure and draw panel A from it. |
+| `--chosen-min-alg-orthogroups` | Highlight this size threshold and mark it on panel A. |
+| `--genomes-to-rbh` | Path to `genomes_to_rbh.py` [auto-detected]. |
+| `--keep-runs` | Keep each combination's `.rbh` directory (the per-combination sizes files are kept either way). |
+| `--extra` | Everything after this is passed to `genomes_to_rbh.py` unchanged. Must come last. |
+
+---
+
+## Choosing the consensus-mode thresholds
+
+The three `--consensus-*` thresholds are the parameters most likely to
+decide whether your reconstruction is usable, and none of them has a
+universally correct value. They do genuinely different jobs, so tune them
+in this order.
+
+### The quick way: sweep all three at once
+
+`sweep_consensus_params.py` runs the sweep for you and writes a single TSV:
+
+```bash
+python3 sweep_consensus_params.py \
+    --input-dir ./Data \
+    --consensus-species Ixod Varr Sarc Neoseiu \
+    --outdir ./sweep \
+    --min-species 3 4 \
+    --min-frac 1.0 0.75 0.5 \
+    --min-alg-orthogroups 1 5 10 15 20 30 \
+    --threads 30 \
+    --plot --plot-out ./Figure1.pdf \
+    --chosen-min-species 4 --chosen-min-frac 0.5 --chosen-min-alg-orthogroups 20
+```
+
+`--plot` also renders a three-panel figure: the linkage-group size
+distribution at the chosen setting with the threshold marked, plus heatmaps
+of the recovered group count and the orthogroup retention across the whole
+grid, with the chosen cell outlined.
+
+![Threshold-selection figure](mock_figures/Figure1_thresholds.png)
+
+*Example output (synthetic data). Panel A is the basis for choosing
+`--consensus-min-alg-orthogroups`; panels B and C show how the group count
+and data retention trade off across the grid.*
+
+```
+min_species  min_frac  min_alg_orthogroups  n_linkage_groups  n_orthogroups_kept  ...  largest_group  pct_orthogroups_retained
+3            1.0       1                    9                 60                       14             100.0
+3            1.0       15                   0                 60                       0              0.0
+3            0.75      10                   4                 60                       15             100.0
+```
+
+Reading it:
+
+- **`n_linkage_groups`** — the number you are trying to make biologically
+  plausible; compare against known haploid chromosome counts for your clade.
+- **`pct_orthogroups_retained`** — how much of your data ends up inside a kept
+  group. A combination with a nice group count but tiny retention is a bad
+  trade, and the row with `min_alg_orthogroups 15` above shows how a size
+  filter set too high can silently discard everything.
+- **`largest_group`** — if one group swallows most of the orthogroups,
+  `--consensus-min-frac` is too permissive and unrelated groups are merging.
+
+It is much faster than it looks. `--consensus-min-alg-orthogroups` is a pure
+post-reconstruction size filter, so every value on that axis is derived
+arithmetically from one reconstruction instead of rerunning it; and all
+combinations share one work directory, so the DIAMOND alignments are computed
+once for the whole sweep. Only `min-species × min-frac` actually triggers a
+run.
+
+Use `--extra` to pass anything else through, e.g.
+`--extra --min-scaffold-length 100000`.
+
+The rest of this section explains what each threshold does, for interpreting
+that table.
+
+### Step 0 — a diagnostic run with everything permissive
+
+```bash
+python3 genomes_to_rbh.py --input-dir ./Data \
+    --consensus-species SpA SpB SpC SpD \
+    --rbh-outdir ./rbh_diag --rbh-only --threads 30 \
+    2>&1 | grep -E "orthogroups|reconstructed"
+```
+
+Two log lines matter:
+
+```
+built 7314 orthogroups from 10844 RBH-graph components (3530 dropped as ambiguous/multi-copy...)
+2074/7314 orthogroups present in >= 6 core species        <- the presence filter
+reconstructed 1896 consensus linkage groups (1896 before size filtering)
+```
+
+### `--consensus-min-species` — how many core genomes must contain a gene
+
+Default is *all* core species. With a handful of closely related core
+genomes that's fine. With many core genomes spanning deep divergences, it
+gets strict fast: gene loss, elevated sequence divergence and annotation
+gaps all compound, and a single miss in one lineage discards the orthogroup
+entirely.
+
+Watch the `N/M orthogroups present in >= K core species` line. If you are
+keeping only a small fraction of orthogroups, relax it — allowing one or two
+lineages to be missing (e.g. `4` with 6 core species) often recovers a large
+amount of usable signal at little cost.
+
+### `--consensus-min-frac` — how much disagreement to tolerate before merging
+
+Default is `1.0`: every core genome that has both orthogroups must agree
+they sit on the same chromosome. In clades with real rearrangement, one
+lineage's private translocation is then enough to block a genuine ancestral
+linkage group from being reconstructed at all — the reconstruction shatters
+into many small groups.
+
+Sweep it and watch how the *raw* group count (before size filtering) moves:
+
+```bash
+for frac in 1.0 0.8 0.7 0.6; do
+  echo "--- min-frac $frac ---"
+  python3 genomes_to_rbh.py --input-dir ./Data \
+      --consensus-species SpA SpB SpC SpD \
+      --consensus-min-species 3 --consensus-min-frac $frac \
+      --rbh-outdir ./rbh_frac_$frac --rbh-only --threads 30 \
+      2>&1 | grep reconstructed
+done
+```
+
+You want a **smooth, monotonic decrease**. If the count collapses abruptly
+toward 1, that means unrelated groups are being merged — back off to a
+stricter value. (Merging uses agglomerative clustering with cluster-level
+re-validation at every step, specifically so that weak pairwise links cannot
+chain transitively into one giant group; a sudden collapse is nonetheless
+worth treating as a warning that the threshold is too permissive for your
+data.)
+
+#### Watch out: only the fractions *k/n* are achievable
+
+Agreement is measured as (genomes agreeing) / (genomes sharing both
+orthogroups), so a threshold sitting just **above** one of those discrete
+fractions silently behaves like the next one up. The classic trap:
+
+> With 3 core genomes, `--consensus-min-frac 0.67` **rejects** 2-of-3
+> agreement, because 2/3 = 0.6667 < 0.67 — making it indistinguishable from
+> requiring unanimity. For "2 of 3 may disagree", use `0.66` or lower.
+
+Every consensus run now prints what the threshold actually means, and warns
+when the value sits just above a natural boundary:
+
+```
+--consensus-min-frac 0.67 means, for orthogroup pairs shared by 2/3/4 core
+genomes respectively: 2/2, 3/3, 3/4 must agree
+NOTE: --consensus-min-frac 0.67 is just above 2/3 (0.6667); if you intended
+'2 of 3 genomes may agree', use 0.662 or lower - as given, 2-of-3 agreement
+is REJECTED
+```
+
+If two different `--consensus-min-frac` values give byte-identical results,
+this is almost certainly why.
+
+#### Non-independent core taxa change what a threshold means
+
+`--consensus-min-frac` counts genomes, not lineages. If two of your four
+core genomes are sister taxa, then at `0.5` (2-of-4) that single lineage can
+carry a merge over the objections of both other lineages. Set the threshold
+high enough that at least one genome from outside any one lineage must
+concur — with four core genomes, two of which are sisters, that means
+`0.75`.
+
+### `--consensus-min-alg-orthogroups` — discard small groups outright
+
+The other two control *why* groups form. This one simply drops whatever
+small groups remain, regardless of cause. Every run writes
+`consensus_linkage_group_sizes.tsv`, ranking each candidate group by member
+count with a `kept` column, so you can pick the cut-off from the data:
+
+```bash
+sort -k2,2 -rn rbh_diag/consensus_linkage_group_sizes.tsv | column -t | head -40
+```
+
+**If there is a clear cliff** — a cluster of large groups, then a sharp drop
+to a tail of small ones — set the threshold just above the drop.
+
+**If the distribution decays smoothly**, which is common for
+phylogenetically broad samples, then no threshold is objectively correct.
+Don't keep hunting for a knee that isn't there. Instead:
+
+1. Pick a value giving a biologically plausible number of linkage groups
+   (compare against known haploid chromosome counts for your clade).
+2. State it in your write-up as a **chosen analytical cut-off**, not a
+   data-derived one.
+3. **Run the downstream analysis at several thresholds** and report whether
+   your conclusions — topology, supported clades, inferred events — are
+   stable across them.
+
+If the conclusions are stable, the exact cut-off doesn't matter. If they
+aren't, that instability *is* the finding, and belongs in the paper rather
+than hidden behind a single flattering threshold. Because
+`--consensus-min-frac` and `--consensus-min-alg-orthogroups` interact, vary
+both in that sensitivity analysis — not just one.
+
+### Choosing the core set itself
+
+- **Never put a whole-genome-duplicated lineage in the core set.** Its
+  ohnologs are dropped as ambiguous multi-copy components, silently gutting
+  the reconstruction. Put duplicated genomes on the comparison side and use
+  `--detect-wgd --wgd-species …` instead.
+- **Prefer phylogenetically independent core lineages.** Several close
+  relatives will agree with each other for reasons of recent shared
+  ancestry, which makes the agreement check circular rather than
+  informative.
+- **Check assembly contiguity before committing.** A fragmented core genome
+  inflates the linkage-group count no matter how the thresholds are set:
+
+  ```bash
+  for sp in SpA SpB SpC SpD; do
+    echo "=== $sp ==="
+    f=$(ls Data/${sp}.gff3 Data/${sp}.gtf 2>/dev/null | head -1)
+    awk -F'\t' '!/^#/{if($5>max[$1]) max[$1]=$5} END{for (s in max) print max[s], s}' "$f" \
+      | sort -rn | head -5
+  done
+  ```
+
+  (Note the `.gff3`-or-`.gtf` handling — assuming one extension silently
+  produces empty output for species using the other.)
+
+---
+
+## Testing sensitivity to `--min-genes` and `--alpha`
+
+The consensus thresholds above decide what a linkage group *is*. Two further
+thresholds decide when a linkage group counts as **present on a chromosome**,
+and so how many fusion characters exist at all:
+
+- `--min-genes` — minimum orthologs supporting the association
+- `--alpha` — Fisher's exact enrichment cutoff
+
+Neither has a defensible default for every dataset, and their effect on
+homoplasy can be large. Sweep them the same way as the consensus thresholds:
+
+```bash
+for mg in 5 10 20; do
+  for a in 0.05 0.01; do
+    python3 alg_parsimony.py --indir ./rbh_out \
+        --outdir ./sens_mg${mg}_a${a} --min-genes $mg --alpha $a \
+        --constraint constraint.txt --outgroup MyOutgroup \
+        --bootstrap 100 > /dev/null 2>&1
+    printf "min-genes=%-3s alpha=%-5s chars=%-4s " "$mg" "$a" \
+      "$(head -1 ./sens_mg${mg}_a${a}/character_matrix.tsv | tr '\t' '\n' | tail -n +2 | wc -l)"
+    grep "ensemble CI" ./sens_mg${mg}_a${a}/report.txt | head -1
+  done
+done
+```
+
+### Reading the result
+
+A real example, 22 acariform and parasitiform taxa against 27 reconstructed
+consensus linkage groups:
+
+| `--min-genes` | `--alpha` | characters | CI | RI |
+|---|---|---|---|---|
+| 5 | 0.05 | 325 | 0.366 | 0.436 |
+| 5 | 0.01 | 314 | 0.363 | 0.424 |
+| 10 | 0.05 | 297 | 0.564 | 0.612 |
+| 10 | 0.01 | 288 | 0.571 | 0.598 |
+| 20 | 0.05 | 264 | 0.657 | 0.663 |
+| 20 | 0.01 | 255 | **0.685** | **0.694** |
+
+Two things stand out, and both generalise:
+
+- **`--min-genes` is the lever; `--alpha` barely matters.** Raising the
+  ortholog minimum from 5 to 20 nearly doubles CI (0.366 → 0.657) while
+  costing only 19% of characters. Tightening `--alpha` tenfold moves CI by
+  at most ~0.03. The enrichment test is not what lets noise through — the
+  ortholog count is.
+- **Character count alone is a poor guide.** The largest matrix is also the
+  most homoplastic. Associations called on a handful of orthologs add steps
+  without adding signal, so more characters can mean a worse matrix.
+
+A low CI is worth diagnosing rather than just reporting. Note that in
+`ci_ri_<run>.tsv` the columns are `character, m, s, g, CI, RI` — CI is
+field **5**, RI is field **6**:
+
+```bash
+sort -k5,5g ci_ri_reversible.tsv | head -20                            # worst CI
+awk -F'\t' 'NR>1 && $5<0.5 {n++} END {print n}' ci_ri_reversible.tsv   # CI < 0.5
+awk -F'\t' 'NR>1 && $6==0  {n++} END {print n}' ci_ri_reversible.tsv   # RI exactly 0
+```
+
+`RI = 0` means a character takes as many steps on your tree as on a
+completely unresolved one: it carries no phylogenetic information at all.
+
+### Compound fusions inflate the character count
+
+A chromosome carrying *k* linkage groups is decomposed into C(*k*,2) pairwise
+characters, all from what may be a single compound event, and all
+non-independent. Check how concentrated this is:
+
+```bash
+awk -F'\t' 'NR>1 {print $1"\t"$2"\t"$3; print $1"\t"$2"\t"$4}' alg_scaffold_calls.tsv \
+  | sort -u | cut -f1,2 | uniq -c | awk '{print $1}' | sort -n | uniq -c
+```
+
+In the dataset above, 12% of scaffolds carried ≥10 linkage groups yet
+generated **57%** of all pairwise character instances, while the 44% of
+scaffolds carrying only 2–3 groups contributed 5%. Where the distribution is
+that skewed, say so in the methods: the effective number of independent
+characters is well below the nominal count, and the inflated count depresses
+CI.
+
+### What to report
+
+Report the sweep, not just the chosen values. A statement such as *"we used
+`--min-genes 20`; CI rose from 0.37 to 0.66 across the tested range while the
+character count fell only 19%, and the recovered topology was stable"* is far
+stronger than a bare threshold — and the numbers are already in hand. Confirm
+the stability claim before making it:
+
+```bash
+for d in sens_mg*; do printf "%-24s " "$d"; cat $d/tree_reversible.nwk; done
+```
+
+Note that `--min-genes` and `--alpha` affect the **character matrix**, and so
+the trees and all statistics — but by default they do **not** change dot
+plots, ideograms or ribbon plots, which show every recovered ortholog. Use
+`--plot-called-only` to make the figures respect the same thresholds.
+
+---
+
+## Detecting whole-genome duplication
+
+Reciprocal best hit is a strict 1:1 mapping, so a genome carrying a
+lineage-specific duplication loses one member of every ohnologous pair. The
+practical effect is a **systematic false negative**: orthologs are split
+between the two retained copies of each ancestral chromosome, neither copy
+clears `--min-genes`, and a fully retained linkage group is called *absent*
+rather than doubled. `--detect-wgd` finds ohnologous chromosome pairs by
+intragenomic self-comparison and adds the dropped copy back, flagged
+`wgd_inferred` so rescued and direct evidence stay separable.
+
+### Calibrating `--wgd-min-paralog-pairs`
+
+Run the detection once with the count filter off, so every candidate pair is
+reported:
+
+```bash
+python3 genomes_to_rbh.py --input-dir ./Data \
+    --consensus-species SpA SpB SpC \
+    --detect-wgd --wgd-species Dup1 Dup2 \
+    --wgd-min-paralog-pairs 1 \
+    --rbh-outdir ./rbh_wgd_diag --rbh-only --threads 30
+
+python3 calibrate_wgd.py rbh_wgd_diag/duplication_blocks.tsv \
+    --plot --plot-out wgd_thresholds.pdf
+```
+
+Add `--chosen SPECIES=N ...` to mark your final thresholds on the figure once
+you have decided them, e.g. `--chosen Limulus=70 Mgig=30`.
+
+**Do not threshold on significance.** Fisher's exact test asks whether a
+chromosome pair carries more paralogy than the genome-wide background
+predicts, which is not the same question as whether the two chromosomes are
+ohnologous — two small, paralog-poor chromosomes clear that bar on a handful
+of shared paralogs. On real genomes this routinely accepts pairs supported by
+1–3 paralogs, and can make nearly half of all possible chromosome pairs
+"significant". Enrichment is necessary, not sufficient.
+
+**Use karyotype expectation instead.** After one whole-genome duplication each
+chromosome has exactly one ohnologous partner, so *n* chromosomes give roughly
+*n*/2 confirmed pairs, rising toward *n* if the genome has since been
+rearranged or duplicated again. `calibrate_wgd.py` reports the lowest threshold
+consistent with each expectation, per taxon, and plots three panels per taxon:
+
+- **A** — candidate pairs ranked by support, coloured by significance
+- **B** — support against significance (a scatter here is the warning sign)
+- **C** — confirmed pairs, and chromosomes retaining >1 partner, across thresholds
+
+Panel C is the one to choose from. The red curve carries biological
+information in its own right: chromosomes keeping several partners at every
+threshold indicate a *network* of ohnology — post-duplication rearrangement or
+more than one round — rather than clean pairs.
+
+Thresholds legitimately differ several-fold between taxa, because paralog-pair
+counts scale with genome size and gene content. Set them per species:
+
+```bash
+--wgd-min-paralog-pairs 30 Limulus=70 Mgig=30
+```
+
+A bare number is the default for any species not named; `--wgd-alpha` takes the
+same form. A name that isn't in `--wgd-species` is rejected rather than
+silently ignored.
+
+> **Scope.** Rescue assumes one ohnologous partner per chromosome. Where that
+> fails — multiple rounds, or heavy post-duplication rearrangement — it is
+> partial, and recovered counts are a **lower bound**. Check
+> `duplication_blocks.tsv` and say so rather than presenting the result as
+> complete.
+
+
+
+### Which genomes go where
+
+Duplication-carrying lineages must **never** be core/reference genomes. In
+consensus mode their ohnologs are discarded as ambiguous multi-copy
+components, silently gutting the reconstruction; in single-reference mode
+each ancestral chromosome would define two "linkage groups", one per
+retained copy. Put them on the comparison side:
+
+```
+--consensus-species <non-duplicated taxa> --detect-wgd --wgd-species <duplicated taxa>
+```
+
+### Calibrating `--wgd-min-paralog-pairs`
+
+Same two-step approach as the consensus thresholds. Run with the count
+filter effectively off so the report lists every candidate:
+
+```bash
+python3 genomes_to_rbh.py --input-dir ./Data \
+    --consensus-species SpA SpB SpC \
+    --detect-wgd --wgd-species DupTaxon \
+    --wgd-min-paralog-pairs 1 \
+    --rbh-outdir ./rbh_wgd_diag --rbh-only --threads 30
+
+# NB: duplication_blocks.tsv starts with a taxon column, so the count is $4
+sort -k4,4 -rn rbh_wgd_diag/duplication_blocks.tsv | head -40
+awk 'NR>1{print $4}' rbh_wgd_diag/duplication_blocks.tsv | sort -rn | uniq -c
+```
+
+Look for the break between real ohnologous chromosome pairs (typically
+dozens to hundreds of supporting paralog pairs, with very small p-values)
+and incidental paralogy (a large mass of pairs at 1–5). Set the threshold
+just above that noise floor.
+
+Sanity checks:
+
+- **Confirmed pairs vs. chromosome number.** One clean WGD should give
+  roughly one ohnologous partner per ancestral chromosome. Many more than
+  that means the threshold is still too permissive.
+- **Scaffolds with several partners.** After an ancient WGD, post-duplication
+  fusion and fission mean a modern chromosome often carries material from
+  more than one ancestral ohnolog, so a *strong* partner plus one or two
+  weaker links is expected and interpretable. A dense, evenly-connected
+  network is not, and suggests either a too-low threshold or a duplication
+  history beyond the pairwise model this implementation assumes.
+
+Then verify visually rather than trusting counts alone:
+
+```bash
+--forward ... --plot-dotplots --plot-ribbon --highlight-wgd
+```
+
+`dotplots/<taxon>.wgd.pdf` should show rescued orthologs (drawn at double
+diameter and ringed) forming paired diagonals across ohnologous chromosomes.
+
+## Example scripts
+
+Each of these is also a runnable file in [`examples/`](examples/), so you can
+edit a copy rather than paste out of a README:
+
+| | |
+|---|---|
+| [`01_quickstart_from_rbh.sh`](examples/01_quickstart_from_rbh.sh) | You already have `.rbh` tables. No `diamond` needed. |
+| [`02_full_run_reference_mode.sh`](examples/02_full_run_reference_mode.sh) | Raw genomes, single-reference mode. |
+| [`03_consensus_mode_with_wgd.sh`](examples/03_consensus_mode_with_wgd.sh) | Consensus mode with WGD lineages, in three steps. **Start here for real work.** |
+| [`04_sensitivity.sh`](examples/04_sensitivity.sh) | Are the conclusions stable across thresholds? |
+| [`05_toy_dataset_test.sh`](examples/05_toy_dataset_test.sh) | End-to-end test against known ground truth. |
+| [`06_wgd_calibration.sh`](examples/06_wgd_calibration.sh) | Per-taxon `--wgd-min-paralog-pairs` calibration. |
+
+### 1. Quick start from existing `.rbh` files
+
+```bash
+python3 alg_parsimony.py \
+    --indir ./rbh_files \
+    --outdir ./results \
+    --min-genes 3 --alpha 0.05 \
+    --outgroup MyOutgroup \
+    --plot-dotplots --plot-trees --plot-matrix
+```
+
+### 2. Full run from raw genomes, single-reference mode
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+python3 genomes_to_rbh.py \
+    --input-dir ./Data \
+    --reference-species Ixod \
+    --min-scaffold-length 100000 \
+    --threads 30 \
+    --rbh-outdir ./rbh_out \
+    --parsimony-script "$(pwd)/alg_parsimony.py" \
+    --parsimony-outdir ./parsimony_out \
+    --forward \
+      --min-genes 3 --alpha 0.05 \
+      --outgroup Ixod \
+      --plot-dotplots --plot-trees --plot-ideograms \
+      --bootstrap 100 --permutation-test 100
+```
+
+### 3. Consensus mode with WGD lineages, and a tuning sweep
+
+```bash
+#!/usr/bin/env bash
+# Core set: non-duplicated, well-assembled, phylogenetically spread taxa.
+# WGD lineages go on the comparison side with --detect-wgd, never in the core.
+set -euo pipefail
+
+CORE="SeaSpider Tick Mite Harvestman"
+WGD="Spider Scorpion HorseshoeCrab"
+
+# --- Step 1: diagnostic, everything permissive -----------------------------
+python3 genomes_to_rbh.py \
+    --input-dir ./Data --consensus-species $CORE \
+    --rbh-outdir ./rbh_diag --rbh-only --threads 30 \
+    2>&1 | grep -E "orthogroups|reconstructed"
+
+echo "--- linkage-group size distribution ---"
+sort -k2,2 -rn ./rbh_diag/consensus_linkage_group_sizes.tsv | column -t | head -40
+
+# --- Step 2: sweep the thresholds that interact ----------------------------
+for frac in 1.0 0.8 0.7; do
+  for minalg in 10 20; do
+    echo "=== min-frac=$frac min-alg-orthogroups=$minalg ==="
+    python3 genomes_to_rbh.py \
+        --input-dir ./Data --consensus-species $CORE \
+        --consensus-min-species 3 \
+        --consensus-min-frac "$frac" \
+        --consensus-min-alg-orthogroups "$minalg" \
+        --rbh-outdir "./rbh_f${frac}_m${minalg}" --rbh-only --threads 30 \
+        2>&1 | grep reconstructed
+  done
+done
+
+# --- Step 3: full analysis at a chosen setting -----------------------------
+python3 genomes_to_rbh.py \
+    --input-dir ./Data \
+    --consensus-species $CORE \
+    --consensus-min-species 3 \
+    --consensus-min-frac 0.7 \
+    --consensus-min-alg-orthogroups 15 \
+    --detect-wgd --wgd-species $WGD --wgd-min-paralog-pairs 30 \
+    --min-scaffold-length 100000 \
+    --threads 30 \
+    --rbh-outdir ./rbh_out \
+    --parsimony-script "$(pwd)/alg_parsimony.py" \
+    --parsimony-outdir ./parsimony_out \
+    --forward \
+      --min-genes 3 --alpha 0.05 \
+      --outgroup SeaSpider \
+      --constraint constraint.txt \
+      --plot-dotplots --plot-trees --plot-matrix --plot-ideograms \
+      --plot-ribbon --ribbon-order-from-tree reversible \
+      --highlight-wgd \
+      --bootstrap 100 --permutation-test 100 \
+      --export-nexus --export-tnt
+```
+
+### 4. Sensitivity analysis on the downstream conclusions
+
+```bash
+#!/usr/bin/env bash
+# Are the biological conclusions stable across plausible thresholds?
+set -euo pipefail
+CORE="SeaSpider Tick Mite Harvestman"
+
+for minalg in 10 15 20 30; do
+  python3 genomes_to_rbh.py \
+      --input-dir ./Data --consensus-species $CORE \
+      --consensus-min-species 3 --consensus-min-frac 0.7 \
+      --consensus-min-alg-orthogroups "$minalg" \
+      --threads 30 \
+      --rbh-outdir "./rbh_t${minalg}" \
+      --parsimony-script "$(pwd)/alg_parsimony.py" \
+      --parsimony-outdir "./parsimony_t${minalg}" \
+      --forward --min-genes 3 --alpha 0.05 \
+        --outgroup SeaSpider --bootstrap 100
+done
+
+echo "=== recovered topologies across thresholds ==="
+for minalg in 10 15 20 30; do
+  printf "%-6s " "t=$minalg"
+  cat "./parsimony_t${minalg}/tree_reversible.nwk"
+done
+```
+
+### 5. Test the pipeline end to end on synthetic data
+
+```bash
+python3 make_toy_dataset.py --outdir toy_data      # see toy_data/MANIFEST.md
+python3 make_toy_dataset.py --verify-only          # sanity-check sequences only
+
+bash tests/validate_toy.sh ./toy_validation   # runs V1-V5 and checks every expectation
+```
+
+`toy_data/MANIFEST.md` lists the five validations (single-reference mode,
+consensus mode, duplication rescue, the scaffold-length filter and the mixed
+fusion), the exact command for each and the result it must give. In
+single-reference mode the reference genome (T1) is not a taxon, so T2 is the
+outgroup; in consensus mode T1 is a taxon and is the outgroup.
+
+---
+
+## Example figures
+
+Rendered from a synthetic dataset (`make_mock_rbh.py` in `mock_figures/`),
+so the layouts can be inspected before committing real data to them.
+
+**Ribbon plot** — one track per taxon, painted by linkage group, with the
+consensus reference on top as an unfused baseline. Ordered by the tree and
+with chromosome order optimised to minimise crossings, so the crossings that
+remain reflect genuine rearrangement:
+
+![Ribbon plot](mock_figures/Figure2_ribbon.png)
+
+**Character matrix and trees** — the matrix heatmap plus both optimality
+criteria, with synapomorphies labelled on the branches where they originate:
+
+![Character matrix and trees](mock_figures/Figure3_matrix_trees.png)
+
+**Ohnolog rescue** — the same duplicated genome without rescue (A) and with
+it (B): plain reciprocal best hit splits orthologs thinly across both
+ohnologous copies so neither clears the threshold, and the duplication
+becomes invisible rather than obvious.
+
+![WGD rescue](mock_figures/Figure5_wgd_rescue.png)
+
+Panels C and D there are assembled from `ohnolog_summary.tsv` and
+`duplication_blocks.tsv` by `mock_figures/assemble_mock_figures.py`; the
+other panels come straight from the toolkit.
+
+---
+
+## Output files
+
+Written to `alg_parsimony.py`'s `--outdir` (figures in `--plot-format`,
+PDF by default):
+
+| File | Contents |
+|---|---|
+| `character_matrix.tsv` | Taxa × characters, states 0/1/2/`?`. |
+| `alg_scaffold_calls.tsv` | Every ALG-pair fusion/mixing call per taxon. |
+| `tree_reversible.nwk` / `.txt` | Best tree under ordinary (Fitch/Sankoff) parsimony; bootstrap support embedded as internal-node labels when `--bootstrap` is used. |
+| `tree_irreversible.nwk` / `.txt` | Same, forbidding fusion/mixing reversal (Camin–Sokal). |
+| `synapomorphies_*.txt` | Which fusion/mixing events unite which clades. |
+| `ci_ri_*.tsv` | Per-character consistency and retention indices (always written). |
+| `bootstrap_*.tsv` | Per-clade bootstrap support. |
+| `permutation_test_*.tsv` | Per-replicate scores from the signal test. |
+| `report.txt` | Everything above, human-readable. |
+| `dotplots/`, `ideograms/`, `ribbon.*`, `character_matrix_heatmap.*`, `tree_*.pdf` | Figures. |
+| `ohnolog_summary.tsv`, `ribbon_wgd/` | With `--highlight-wgd`: rescued-vs-direct ortholog counts and duplication-highlighted figures. |
+
+From `genomes_to_rbh.py`'s `--rbh-outdir`:
+
+| File | Contents |
+|---|---|
+| `<taxon>.rbh` | Ortholog table per taxon, including an `orthology_type` column (`direct` / `wgd_inferred`). |
+| `consensus_linkage_group_sizes.tsv` | Consensus mode: every candidate linkage group ranked by member-orthogroup count, with a `kept` column. |
+| `duplication_blocks.tsv` | With `--detect-wgd`: confirmed ohnologous scaffold pairs and their support. |
+
+---
+
+## Character model
+
+For every pair of linkage groups co-occurring on a scaffold in some taxon:
+
+- **0 — unfused**: the two groups sit on different scaffolds.
+- **1 — fused, clean**: co-located, still two contiguous blocks.
+- **2 — fused, mixed**: co-located and interleaved.
+
+Two searches run over the same characters:
+
+- **Reversible** — ordinary Fitch/Sankoff parsimony; changes may go either
+  direction.
+- **Irreversible** — states may only increase (0→1→2), modelling the claim
+  that fusion and especially post-fusion mixing do not spontaneously revert.
+  Requires a rooted tree via `--outgroup`.
+
+Ancestral states are reconstructed for both, and shared derived states are
+reported as synapomorphies on the clades they support.
+
+---
+
+## Caveats
+
+- Fusion calls use whole-scaffold association only; sub-scaffold breakpoint
+  (`break_FET`) signal is not modelled.
+- A scaffold carrying 3+ linkage groups is decomposed into all pairwise
+  characters, following convention — but those characters are not strictly
+  independent.
+- Above `--max-exhaustive` taxa the search is heuristic (Wagner + TBR +
+  ratchet). It reached the exact optimum on every benchmark matrix
+  (`benchmarks/`), but a heuristic cannot prove optimality: use `--search
+  exact` where the taxon number allows, check the replicate hit count in
+  `report.txt`, and confirm published scores with `--run-tnt` or `--run-paup`.
+- Single-reference mode inherits the reference genome's own rearrangements
+  and assembly errors. Consensus mode is more robust but only as good as its
+  core set. Either way, describe results as fusions *relative to* that
+  reference or consensus set.
+- `--detect-wgd` rescues ohnologs only on the compared side, and assumes
+  duplication resolves into clean paralog **pairs**. Lineages with multiple
+  rounds of duplication (e.g. horseshoe crabs) will be partially, not fully,
+  rescued — treat those results as a lower bound and inspect
+  `duplication_blocks.tsv` directly.
+- Scaffold lengths come from GFF3 `##sequence-region` pragmas where present,
+  otherwise from the furthest annotated feature end — a lower bound. GTF
+  never carries such pragmas.
+
+---
+
+## Requirements
+
+- **Python 3** with `pandas` (both scripts)
+- **`diamond`** on `PATH` — required by `genomes_to_rbh.py`
+- **`matplotlib`** — optional, for all `--plot-*` output
+- **`scipy`** — optional, for Fisher's exact tests (falls back to count-only
+  thresholds)
+- **`biopython`** — optional, only when a species has no `.pep` and needs
+  CDS→protein translation
+- **`paup`** / **`tnt`** on `PATH` — optional, only for `--run-paup` /
+  `--run-tnt`
+
+`pip install -r requirements.txt` covers everything pip can install. The
+GitHub Actions workflow in `.github/workflows/ci.yml` runs the tests on
+Python 3.9, 3.11 and 3.13, and the toy validations with DIAMOND from Bioconda.
+
+---
+
+## Reproducibility
+
+- `--seed` fixes every random choice; results do not depend on
+  `PYTHONHASHSEED`, the machine or `--threads` (`tests/test_determinism.sh`).
+- Every run writes `run_info.json` (version, git commit, exact command, every
+  parameter including defaults, seed, package versions and a SHA-256 checksum
+  of every input file), and `report.txt` starts with the same information.
+- Cite the tagged release you used; its DOI is in `CITATION.cff`.
+
+---
+
+## Cross-checking the search
+
+For any result you intend to publish, confirm the score in TNT or PAUP\*:
+
+```bash
+python3 alg_parsimony.py … --run-tnt          # or --run-paup
+```
+
+This writes the scripts, runs them (`tnt "proc <file>;"`, `paup -n <file>`),
+checks that trees and a tree length were actually produced, and adds an
+"External cross-check" section to `report.txt` comparing the lengths. A run
+that fails is reported as failed even if the program exits with code 0. For
+the irreversible criterion, TNT and PAUP\* are given an all-zero ancestor
+taxon; the external length is then lower than Anvaya's by a constant that does
+not depend on the topology, which the exporter computes and the comparison
+adds back (see `irreversible_offset()` in `alg_parsimony.py`).
+[`examples/tnt/`](examples/tnt/) documents TNT pitfalls worth knowing.
+
+Within a run, Anvaya also reports how many independent replicates reached
+the best score, and the reversible and irreversible searches score each
+other's best topologies; a warning about either means: raise `--replicates`
+/ `--ratchet`, or use `--search exact`.
+
+---
+
+## Citing
+
+If you use Anvaya, please cite the paper and the software as:
+
+> Kulkarni, S. (2026) Anvaya: phylogenomic analysis of chromosome fusion-and-mixing
+> characters and detection of shared whole-genome duplication. *bioRxiv*
+> https://doi.org/10.64898/2026.10.08.757583
+
+and the software release you used (DOI in [`CITATION.cff`](CITATION.cff); GitHub's
+"Cite this repository" button gives the same).
+
+Also cite the tools Anvaya depends on for your run — at minimum DIAMOND for the
+orthology search, and TNT or PAUP\* if you report a cross-checked score.
+
+---
+
+## License
+
+MIT — see [`LICENSE`](LICENSE).
+
+---
+
+## Contributing
+
+Issues and pull requests are welcome. Two things make a bug report
+actionable:
+
+1. the full command you ran, and
+2. `report.txt` and `run_info.json` from the run, which record the version,
+   parameters and every warning the run emitted.
